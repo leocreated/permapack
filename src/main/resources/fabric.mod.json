@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "permapack",
+  "version": "${version}",
+  "name": "PermaPack",
+  "description": "Three friends. One shared inventory. Every slot stays claimed forever.",
+  "authors": ["Leo"],
+  "license": "MIT",
+  "environment": "*",
+  "entrypoints": { "main": ["dev.leo.permapack.PermaPack"] },
+  "mixins": ["permapack.mixins.json"],
+  "depends": { "fabricloader": ">=0.20.1", "minecraft": "26.2", "java": ">=25", "fabric-api": "*" }
+}

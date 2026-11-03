@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "id": "permapack-tests",
+  "version": "1.0.0",
+  "environment": "*",
+  "entrypoints": { "fabric-gametest": ["dev.leo.permapack.PermaPackGameTests"] }
+}
