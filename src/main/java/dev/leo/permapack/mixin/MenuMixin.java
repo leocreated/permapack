@@ -11,6 +11,10 @@ import org.spongepowered.asm.mixin.injection.callback.*;
 
 @Mixin(AbstractContainerMenu.class)
 public abstract class MenuMixin {
+    @Inject(method="canItemQuickReplace", at=@At("HEAD"), cancellable=true)
+    private static void reservationIsEmpty(Slot slot, ItemStack stack, boolean allowOverflow, CallbackInfoReturnable<Boolean> cir) {
+        if(slot!=null && SharedBag.ghost(slot.getItem()) && SharedBag.real(stack)) cir.setReturnValue(true);
+    }
     @Inject(method="clicked", at=@At("HEAD"), cancellable=true)
     private void guard(int slot, int button, ContainerInput input, Player player, CallbackInfo ci) {
         SharedBag bag = PermaPack.forPlayer(player);
@@ -38,7 +42,12 @@ public abstract class MenuMixin {
         if (inventory == null) return;
         SharedBag bag = PermaPack.forPlayer(inventory.player);
         if (bag == null || !bag.bound(inventory)) return;
-        for (ItemStack current : bag.items) if (current == stack) { cir.setReturnValue(false); return; }
+        for (ItemStack current : bag.items) if (current == stack) {
+            java.util.List<Integer> destinations=new java.util.ArrayList<>();
+            for(int n=start;n<end;n++) destinations.add(menu.slots.get(n).getContainerSlot());
+            if(reverse) java.util.Collections.reverse(destinations);
+            cir.setReturnValue(bag.moveWithinBag(stack,destinations)); return;
+        }
         cir.setReturnValue(bag.insert(stack));
     }
 }

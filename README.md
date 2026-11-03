@@ -1,19 +1,23 @@
 # PermaPack
 
 A Fabric Minecraft challenge for up to three players: **one shared inventory,
-and every slot stays claimed by the first item type stored in it.**
+36 permanent item allocations, and freely movable stacks.**
 
-Current prototype: **0.1.1**, for **Minecraft 26.2**, **Fabric Loader 0.20.1**,
+Current prototype: **0.1.2**, for **Minecraft 26.2**, **Fabric Loader 0.20.1**,
 **Fabric API 0.161.0+26.2**, and **Java 25**.
 
 ## How it plays
 
 - All players share the same 36 inventory/hotbar slots and stack quantities.
-- Using or crafting away an item leaves its slot permanently reserved.
-- A reserved empty slot can refill with the same item type. Extra stacks can
-  claim additional physical slots, including more slots for the same type.
-- Hover an inventory slot and press a hotbar number, 1-9, to swap both items
-  and their reservations. Normal stack sizes and item components are preserved.
+- Storing a stack permanently claims an allocation for its item type. Using,
+  placing or crafting away the item does not free that allocation.
+- Items can occupy any of the 36 positions. Move dirt out of hotbar slot 1
+  and put a sword there; reservations follow the layout without extra cost.
+- Normal clicks, hotbar number swaps, shift transfers and left/right drag
+  distribution work. Normal stack sizes and item components are preserved.
+- Splitting into extra stored stacks can claim extra allocations. Merging them
+  does not refund allocations. Empty reservations can refill with their own
+  item type; their visible markers move aside when you rearrange other items.
 - Armor and offhands are personal, but their item types still claim reservations.
 - Dropping items and depositing into storage are blocked. Looting, crafting
   and workstation use are allowed. Bundles and filled portable storage are blocked.
@@ -66,21 +70,22 @@ Use a JDK 25 and the included Gradle wrapper. On Windows:
 ```
 
 On other systems, use `./gradlew test runGameTest build`. Output is
-`build/libs/permapack-0.1.1.jar`. The test mod is a separate source set and is
+`build/libs/permapack-0.1.2.jar`. The test mod is a separate source set and is
 not shipped in the production JAR.
 
-The existing suite covers permanent reservations, three connected server
-players, concurrent cursor grabs, crafting, single-cell drag gestures,
-shift-crafting, drops and storage, loot, exact `/give` counts, item conversions,
-full-budget limits, persistence, reconnect, death/respawn and safe stop.
+The suite has 13 unit tests and five required Minecraft GameTests. It covers
+three connected server players, real click packets, free positioning at the
+full allocation limit, ordinary swaps, split/merge budgets, left/right drags,
+pickups while another player holds a stack, concurrent gestures, crafting,
+drops and storage, loot, item conversions, persistence, reconnect,
+death/respawn and safe stop. See [BUILD-VERIFICATION.md](BUILD-VERIFICATION.md).
 
 ## Prototype limits
 
-Dragging to distribute across bag slots is disabled. Normal clicks and hotbar
-number swaps work; crafting-grid and workstation-input drag gestures work.
-The prototype has been checked in a full Prism client with Essential,
-Flashback and fullbright. A three-human Essential session and long Survival
-runs still need group testing. Every workstation, conversion and extra-mod
+Version 0.1.2 has been checked in a full Prism client with Essential,
+Flashback and fullbright. The existing save format and permanent allocation
+counts are retained. A three-human Essential session and long Survival runs
+still need group testing. Every workstation, conversion and extra-mod
 interaction has not been exhaustively checked. Use a test world first.
 
 Version 0.1.1 removes the slot bar; recordings made with an older version can

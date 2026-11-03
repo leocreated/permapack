@@ -51,6 +51,25 @@ public final class PermaPackGameTests {
     private static int count(SharedBag bag, net.minecraft.world.item.Item item) {
         return bag.items.stream().filter(SharedBag::real).filter(s -> s.is(item)).mapToInt(ItemStack::getCount).sum();
     }
+    private static int itemSlot(SharedBag bag,net.minecraft.world.item.Item item) {
+        for(int n=0;n<36;n++) if(SharedBag.real(bag.items.get(n)) && bag.items.get(n).is(item)) return n;
+        throw new IllegalStateException("Missing fixture item "+item);
+    }
+    private static void drag(ServerPlayer player,int type,int... slots) {
+        click(player,-999,AbstractContainerMenu.getQuickcraftMask(0,type),ContainerInput.QUICK_CRAFT);
+        for(int slot:slots) click(player,slot,AbstractContainerMenu.getQuickcraftMask(1,type),ContainerInput.QUICK_CRAFT);
+        click(player,-999,AbstractContainerMenu.getQuickcraftMask(2,type),ContainerInput.QUICK_CRAFT);
+    }
+    private static void packetClick(ServerPlayer player,int slot,int button,ContainerInput input) {
+        player.connection.handleContainerClick(new net.minecraft.network.protocol.game.ServerboundContainerClickPacket(
+            player.containerMenu.containerId,player.containerMenu.getStateId(),(short)slot,(byte)button,input,
+            new it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap<net.minecraft.network.HashedStack>(),net.minecraft.network.HashedStack.EMPTY));
+    }
+    private static void packetDrag(ServerPlayer player,int type,int... slots) {
+        packetClick(player,-999,AbstractContainerMenu.getQuickcraftMask(0,type),ContainerInput.QUICK_CRAFT);
+        for(int slot:slots) packetClick(player,slot,AbstractContainerMenu.getQuickcraftMask(1,type),ContainerInput.QUICK_CRAFT);
+        packetClick(player,-999,AbstractContainerMenu.getQuickcraftMask(2,type),ContainerInput.QUICK_CRAFT);
+    }
     private static void check(GameTestHelper h, boolean value, String message) {
         h.assertTrue(value, message);
     }
@@ -203,7 +222,7 @@ public final class PermaPackGameTests {
             check(h,count(bag,Items.WATER_BUCKET)==1 && h.getLevel().getFluidState(source).isEmpty(),"Actual bucket use collects water into the shared bag");
             check(h,bag.ledger.count()==2 && bag.ledger.contains("minecraft:bucket"),"Bucket conversion keeps both permanent reservations");
             check(h,b.getInventory().getNonEquipmentItems()==bag.items && bag.returns.isEmpty(),"Conversion neither duplicates nor queues its output");
-            a.getInventory().add(new ItemStack(Items.BUCKET)); a.getInventory().setSelectedSlot(0);
+            a.getInventory().add(new ItemStack(Items.BUCKET)); a.getInventory().setSelectedSlot(itemSlot(bag,Items.BUCKET));
             fillBudget(bag,36,Set.of(Items.LAVA_BUCKET,Items.NETHER_STAR));
             h.getLevel().setBlockAndUpdate(source,Blocks.LAVA.defaultBlockState());
             var denied=ConversionGuard.use(a,a.getMainHandItem(),null,null);
@@ -256,5 +275,103 @@ public final class PermaPackGameTests {
             System.out.println("PERMAPACK_REMAINDERS_PASS: new-type budget, immediate reservations, exact cake and bucket returns");
             h.succeed();
         } finally { if(bag.active){bag.reset();bag.stop(a);} if(bag.member(a))bag.disconnect(a);server.getPlayerList().remove(a); }
+    }
+
+    @GameTest(maxTicks=200)
+    public void freelyMovablePermanentAllocations(GameTestHelper h) {
+        var server=h.getLevel().getServer();SharedBag bag=PermaPack.get(server);
+        var a=player(h,"MoveA");var b=player(h,"MoveB");var c=player(h,"MoveC");
+        try {
+            fresh(bag,a);check(h,bag.start(List.of(a,b,c)),"Start three-player movement fixture");
+            a.getInventory().add(new ItemStack(Items.DIRT,64));a.getInventory().add(new ItemStack(Items.IRON_SWORD));a.getInventory().add(new ItemStack(Items.IRON_PICKAXE));
+            packetClick(a,bagSlot(a.containerMenu,a,0),0,ContainerInput.PICKUP);
+            packetDrag(a,0,bagSlot(a.containerMenu,a,15));
+            check(h,bag.items.get(15).is(Items.DIRT) && bag.items.get(0).isEmpty() && bag.ledger.count()==3,"Moving a whole stack frees its old screen position without spending an allocation");
+            packetClick(b,bagSlot(b.containerMenu,b,1),0,ContainerInput.PICKUP);
+            packetClick(b,bagSlot(b.containerMenu,b,0),0,ContainerInput.PICKUP);
+            check(h,bag.items.get(0).is(Items.IRON_SWORD) && c.getInventory().getItem(0).is(Items.IRON_SWORD) && bag.ledger.count()==3,"Sword can occupy the original dirt position and all three players share it");
+            packetClick(c,bagSlot(c.containerMenu,c,0),0,ContainerInput.PICKUP);
+            packetClick(c,bagSlot(c.containerMenu,c,15),0,ContainerInput.PICKUP);
+            packetClick(c,bagSlot(c.containerMenu,c,0),0,ContainerInput.PICKUP);
+            check(h,bag.items.get(15).is(Items.IRON_SWORD) && bag.items.get(0).is(Items.DIRT) && c.containerMenu.getCarried().isEmpty() && bag.ledger.count()==3,"Ordinary cursor swaps move both allocations without creating capacity");
+
+            bag.items.get(0).setCount(60);
+            packetClick(a,bagSlot(a.containerMenu,a,0),0,ContainerInput.PICKUP);
+            ItemStack mined=new ItemStack(Items.DIRT);
+            check(h,b.getInventory().add(mined) && mined.isEmpty() && bag.ledger.count()==3,"Mining while another player holds 60 dirt does not spend a redundant allocation for one more dirt");
+            a.inventoryMenu.removed(a);
+            check(h,count(bag,Items.DIRT)==61 && bag.ledger.count()==3 && bag.returns.isEmpty(),"The held and mined dirt recombine into the original allocation");
+            bag.items.get(itemSlot(bag,Items.DIRT)).setCount(64);
+
+            packetClick(a,bagSlot(a.containerMenu,a,0),1,ContainerInput.PICKUP);
+            packetDrag(a,0,bagSlot(a.containerMenu,a,20));
+            check(h,bag.items.get(0).getCount()==32 && bag.items.get(20).getCount()==32 && bag.ledger.reserved("minecraft:dirt")==2 && bag.ledger.count()==4,"Splitting into two stored stacks spends exactly one additional allocation");
+            packetClick(a,bagSlot(a.containerMenu,a,20),0,ContainerInput.PICKUP);
+            packetDrag(a,0,bagSlot(a.containerMenu,a,21));
+            check(h,bag.items.get(21).getCount()==32 && bag.ledger.count()==4,"Moving a split stack does not spend a third allocation");
+            packetClick(a,bagSlot(a.containerMenu,a,21),0,ContainerInput.PICKUP);
+            packetClick(a,bagSlot(a.containerMenu,a,0),0,ContainerInput.PICKUP);
+            check(h,count(bag,Items.DIRT)==64 && bag.ledger.reserved("minecraft:dirt")==2 && bag.ledger.count()==4,"Merging conserves items and does not release an already spent allocation");
+
+            bag.reset();a.getInventory().add(new ItemStack(Items.DIRT,64));a.getInventory().add(new ItemStack(Items.IRON_SWORD));
+            packetClick(a,bagSlot(a.containerMenu,a,0),0,ContainerInput.PICKUP);
+            packetDrag(a,0,bagSlot(a.containerMenu,a,15),bagSlot(a.containerMenu,a,16),bagSlot(a.containerMenu,a,17));
+            check(h,count(bag,Items.DIRT)==63 && a.containerMenu.getCarried().getCount()==1 && bag.ledger.reserved("minecraft:dirt")==3 && bag.ledger.count()==4,"Left drag distributes exact quantities and spends only the extra stored-stack allocations");
+            a.inventoryMenu.removed(a);
+            check(h,count(bag,Items.DIRT)==64 && bag.returns.isEmpty(),"Closing returns the drag remainder exactly once");
+
+            bag.reset();a.getInventory().add(new ItemStack(Items.DIRT,8));
+            packetClick(a,bagSlot(a.containerMenu,a,0),0,ContainerInput.PICKUP);
+            packetDrag(a,1,bagSlot(a.containerMenu,a,20),bagSlot(a.containerMenu,a,21),bagSlot(a.containerMenu,a,22));
+            check(h,count(bag,Items.DIRT)==3 && a.containerMenu.getCarried().getCount()==5 && bag.ledger.count()==3,"Right drag distributes one per cell without creating items");
+            a.inventoryMenu.removed(a);
+            SimpleContainer chest=new SimpleContainer(27);
+            a.containerMenu=ChestMenu.threeRows(81,a.getInventory(),chest);
+            packetClick(a,bagSlot(a.containerMenu,a,itemSlot(bag,Items.DIRT)),0,ContainerInput.PICKUP);
+            int held=a.containerMenu.getCarried().getCount();packetDrag(a,0,0);
+            check(h,chest.isEmpty() && a.containerMenu.getCarried().getCount()==held,"Dragging still cannot deposit into a chest");
+            a.containerMenu.removed(a);a.containerMenu=a.inventoryMenu;
+            int beforeShift=bag.ledger.count();
+            packetClick(a,bagSlot(a.containerMenu,a,itemSlot(bag,Items.DIRT)),0,ContainerInput.QUICK_MOVE);
+            check(h,bag.items.get(0).is(Items.DIRT) && count(bag,Items.DIRT)==8 && bag.ledger.count()==beforeShift,"Shift-click moves between main inventory and hotbar without spending capacity");
+
+            bag.reset();a.getInventory().add(new ItemStack(Items.DIRT,64));a.getInventory().add(new ItemStack(Items.IRON_SWORD));
+            fillBudget(bag,36,Set.of(Items.NETHER_STAR));
+            packetClick(a,bagSlot(a.containerMenu,a,0),0,ContainerInput.PICKUP);
+            ItemStack rejectedMining=new ItemStack(Items.DIRT);
+            check(h,!b.getInventory().add(rejectedMining) && rejectedMining.getCount()==1 && bag.ledger.count()==36,"Full budget refuses a pickup that would require an extra stack after returning the cursor");
+            packetDrag(a,0,bagSlot(a.containerMenu,a,35));
+            packetClick(b,bagSlot(b.containerMenu,b,1),0,ContainerInput.PICKUP);
+            packetClick(b,bagSlot(b.containerMenu,b,0),0,ContainerInput.PICKUP);
+            check(h,bag.items.get(35).is(Items.DIRT) && bag.items.get(0).is(Items.IRON_SWORD) && bag.ledger.count()==36,"Dirt and sword can be repositioned even when every permanent allocation has been spent");
+            packetClick(a,bagSlot(a.containerMenu,a,35),1,ContainerInput.PICKUP);
+            packetDrag(a,0,bagSlot(a.containerMenu,a,20));
+            check(h,a.containerMenu.getCarried().getCount()==32 && bag.items.get(35).getCount()==32 && SharedBag.ghost(bag.items.get(20)) && bag.ledger.count()==36,"Full budget atomically refuses an extra split stack without losing the cursor");
+            packetClick(a,bagSlot(a.containerMenu,a,35),0,ContainerInput.PICKUP);
+            for(int n=0;n<36;n++) if(!SharedBag.real(bag.items.get(n)))
+                bag.items.set(n,new ItemStack(BuiltInRegistries.ITEM.getValue(net.minecraft.resources.Identifier.parse(bag.ledger.at(n)))));
+            bag.normalize();
+            packetClick(a,bagSlot(a.containerMenu,a,0),0,ContainerInput.PICKUP);
+            packetClick(a,bagSlot(a.containerMenu,a,35),0,ContainerInput.PICKUP);
+            packetClick(a,bagSlot(a.containerMenu,a,0),0,ContainerInput.PICKUP);
+            check(h,bag.items.get(35).is(Items.IRON_SWORD) && bag.items.get(0).is(Items.DIRT) && count(bag,Items.DIRT)==64 && bag.ledger.count()==36 && bag.returns.isEmpty(),"Swapping two occupied cells in a completely full bag neither duplicates nor allocates");
+
+            packetClick(a,bagSlot(a.containerMenu,a,0),0,ContainerInput.PICKUP);
+            packetClick(a,-999,AbstractContainerMenu.getQuickcraftMask(0,0),ContainerInput.QUICK_CRAFT);
+            packetClick(a,bagSlot(a.containerMenu,a,0),AbstractContainerMenu.getQuickcraftMask(1,0),ContainerInput.QUICK_CRAFT);
+            packetClick(b,bagSlot(b.containerMenu,b,35),0,ContainerInput.SWAP);
+            packetClick(a,-999,AbstractContainerMenu.getQuickcraftMask(2,0),ContainerInput.QUICK_CRAFT);
+            check(h,bag.items.get(0).is(Items.IRON_SWORD) && a.containerMenu.getCarried().getCount()==64 && bag.ledger.count()==36,"A second player's hotbar swap cannot be overwritten by a stale drag gesture");
+            packetClick(a,bagSlot(a.containerMenu,a,35),0,ContainerInput.PICKUP);
+            var ops=RegistryOps.create(NbtOps.INSTANCE,h.getLevel().registryAccess());
+            SharedBag restored=SharedBag.CODEC.parse(ops,SharedBag.CODEC.encodeStart(ops,bag).getOrThrow()).getOrThrow();restored.normalize();
+            check(h,restored.ledger.count()==36 && restored.ledger.reserved("minecraft:dirt")==1 && ItemStack.listMatches(restored.items,bag.items),"The existing save format preserves movable allocations and quantities");
+            bag.reset();check(h,bag.stop(a),"Clean movement fixture");
+            System.out.println("PERMAPACK_MOVEMENT_PASS: real click packets, free positions, cursor swaps, split/merge budgets, left/right drag, storage guard, shift move, full bag and concurrent gestures");
+            h.succeed();
+        } finally {
+            if(bag.active){bag.reset();bag.stop(a);}
+            for(ServerPlayer p:List.of(a,b,c)){if(bag.member(p))bag.disconnect(p);server.getPlayerList().remove(p);}
+        }
     }
 }

@@ -39,7 +39,6 @@ public abstract class InventoryMixin {
         if (bag == null || !bag.bound((Inventory)(Object)this)) return;
         ItemStack previous = bag.items.get(getSelectedSlot());
         bag.write(getSelectedSlot(), stack);
-        if (SharedBag.real(stack)) for (int n=0;n<9;n++) if (SharedBag.real(bag.items.get(n)) && SharedBag.id(bag.items.get(n)).equals(SharedBag.id(stack))) { setSelectedSlot(n); break; }
         cir.setReturnValue(previous);
     }
     @Inject(method="placeItemBackInInventory(Lnet/minecraft/world/item/ItemStack;Z)V", at=@At("HEAD"), cancellable=true)

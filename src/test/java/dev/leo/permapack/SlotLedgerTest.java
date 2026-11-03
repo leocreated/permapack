@@ -3,9 +3,42 @@ package dev.leo.permapack;
 import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 class SlotLedgerTest {
+    private List<String> emptyLayout() { return new ArrayList<>(Collections.nCopies(36,"")); }
+    @Test void ordinaryRearrangementFollowsTheStacksInsteadOfPinningPositions() {
+        var ledger=new SlotLedger(); ledger.claim(0,"minecraft:dirt");ledger.claim(1,"minecraft:iron_sword");
+        var contents=emptyLayout();contents.set(0,"minecraft:iron_sword");contents.set(20,"minecraft:dirt");
+        assertTrue(ledger.arrange(contents));
+        assertEquals(2,ledger.count());assertEquals("minecraft:iron_sword",ledger.at(0));assertEquals("minecraft:dirt",ledger.at(20));
+        assertEquals("",ledger.at(1));
+    }
+    @Test void unusedReservationMovesAsideForAnUnrelatedStack() {
+        var ledger=new SlotLedger();ledger.claim(0,"minecraft:dirt");ledger.claim(12,"minecraft:iron_sword");
+        var contents=emptyLayout();contents.set(0,"minecraft:iron_sword");
+        assertTrue(ledger.arrange(contents));assertEquals("minecraft:iron_sword",ledger.at(0));
+        assertEquals(1,ledger.reserved("minecraft:dirt"));assertEquals(2,ledger.count());
+    }
+    @Test void splittingSpendsAnAllocationButMovingAndMergingNeverReleaseOne() {
+        var ledger=new SlotLedger();ledger.claim(0,"minecraft:dirt");
+        var contents=emptyLayout();contents.set(0,"minecraft:dirt");contents.set(10,"minecraft:dirt");
+        assertTrue(ledger.arrange(contents));assertEquals(2,ledger.count());
+        contents.set(0,"");contents.set(25,"minecraft:dirt");
+        assertTrue(ledger.arrange(contents));assertEquals(2,ledger.count());
+        contents.set(25,"");assertTrue(ledger.arrange(contents));assertEquals(2,ledger.count());
+    }
+    @Test void aFullAllocationBudgetStillPermitsAnyPermutation() {
+        var ledger=new SlotLedger();var contents=emptyLayout();
+        for(int n=0;n<36;n++) {ledger.claim(n,"test:item_"+n);contents.set(35-n,"test:item_"+n);}
+        assertTrue(ledger.arrange(contents));assertEquals(contents,ledger.snapshot());assertEquals(36,ledger.count());
+    }
+    @Test void refusingAnExtraStackIsAtomicAndDoesNotMoveExistingReservations() {
+        var ledger=new SlotLedger();for(int n=0;n<36;n++)ledger.claim(n,"test:item_"+n);
+        var before=ledger.snapshot();var contents=emptyLayout();contents.set(2,"test:item_0");contents.set(3,"test:item_0");
+        assertFalse(ledger.canArrange(contents));assertFalse(ledger.arrange(contents));assertEquals(before,ledger.snapshot());
+    }
     @Test void reservesWithoutReleasingWhenContentsAreUsed() {
         var ledger = new SlotLedger();
         ledger.claim(0, "minecraft:oak_log");

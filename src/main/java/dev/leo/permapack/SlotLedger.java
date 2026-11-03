@@ -4,8 +4,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.Map;
+import java.util.LinkedHashMap;
 
-/** The permanent promises made by the 36 physical inventory slots. */
+/** Permanent allocation counts, displayed at the current positions of their stacks. */
 public final class SlotLedger {
     public static final int SIZE = 36;
     private final List<String> bindings;
@@ -25,6 +27,45 @@ public final class SlotLedger {
     public boolean contains(String item) { return bindings.contains(item); }
     public int freeSlot() { return bindings.indexOf(""); }
     public boolean canIntroduce(String item) { return contains(item) || freeSlot() >= 0; }
+    public int reserved(String item) { return (int) bindings.stream().filter(item::equals).count(); }
+
+    private Map<String,Integer> allocationCounts() {
+        Map<String,Integer> counts = new LinkedHashMap<>();
+        for (String item : bindings) if (!item.isEmpty()) counts.merge(item,1,Integer::sum);
+        return counts;
+    }
+    private Map<String,Integer> requiredCounts(List<String> contents) {
+        if (contents.size()!=SIZE || contents.stream().anyMatch(Objects::isNull))
+            throw new IllegalArgumentException("Expected 36 non-null content IDs");
+        Map<String,Integer> counts=allocationCounts();
+        Map<String,Integer> used=new LinkedHashMap<>();
+        for(String item:contents) if(!item.isEmpty()) used.merge(item,1,Integer::sum);
+        used.forEach((item,n)->counts.merge(item,n,Math::max));
+        return counts;
+    }
+    public boolean canArrange(List<String> contents) {
+        return requiredCounts(contents).values().stream().mapToInt(Integer::intValue).sum()<=SIZE;
+    }
+    /** Move allocations with real stacks; keep every unused allocation as an empty reservation. */
+    public boolean arrange(List<String> contents) {
+        Map<String,Integer> remaining=requiredCounts(contents);
+        if(remaining.values().stream().mapToInt(Integer::intValue).sum()>SIZE) return false;
+        List<String> next=new ArrayList<>(Collections.nCopies(SIZE,""));
+        for(int n=0;n<SIZE;n++) if(!contents.get(n).isEmpty()) {
+            String item=contents.get(n); next.set(n,item); remaining.merge(item,-1,Integer::sum);
+        }
+        // Retain the visible position of unused reservations where possible, without pinning items to it.
+        for(int n=0;n<SIZE;n++) {
+            String previous=bindings.get(n);
+            if(next.get(n).isEmpty() && remaining.getOrDefault(previous,0)>0) {
+                next.set(n,previous); remaining.merge(previous,-1,Integer::sum);
+            }
+        }
+        for(var entry:remaining.entrySet()) for(int n=0;n<entry.getValue();n++)
+            next.set(next.indexOf(""),entry.getKey());
+        for(int n=0;n<SIZE;n++) bindings.set(n,next.get(n));
+        return true;
+    }
 
     public void claim(int slot, String item) {
         if (item == null || item.isBlank()) throw new IllegalArgumentException("An item ID is required");
