@@ -7,6 +7,30 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 class SlotLedgerTest {
+    @Test void bucketStatesReuseTheSameAllocation() {
+        var ledger=new SlotLedger();ledger.claim(0,"minecraft:bucket");
+        for(String state:List.of("minecraft:water_bucket","minecraft:bucket","minecraft:lava_bucket","minecraft:bucket")) {
+            var layout=emptyLayout();layout.set(10,state);assertTrue(ledger.arrange(layout));assertEquals(1,ledger.count());
+            assertEquals(1,ledger.reserved(state));assertTrue(ledger.contains(state));
+        }
+    }
+    @Test void legacyBucketMigrationUsesTheLargestVariantCountAndKeepsOccupiedStacks() {
+        var saved=emptyLayout();saved.set(0,"minecraft:bucket");saved.set(1,"minecraft:water_bucket");saved.set(2,"minecraft:lava_bucket");saved.set(3,"minecraft:water_bucket");
+        var ledger=new SlotLedger(saved);assertEquals(2,ledger.count());
+        var layout=emptyLayout();layout.set(5,"minecraft:bucket");layout.set(6,"minecraft:water_bucket");layout.set(7,"minecraft:lava_bucket");
+        assertTrue(ledger.arrange(layout));assertEquals(3,ledger.count());
+        assertEquals(ledger.snapshot(),new SlotLedger(ledger.snapshot()).snapshot());
+    }
+    @Test void explicitReleaseRemovesOnlyOneAllocationAndMakesRoomForANewType() {
+        var ledger=new SlotLedger();ledger.claim(0,"minecraft:dirt");ledger.claim(1,"minecraft:dirt");
+        assertEquals("minecraft:dirt",ledger.release(0));assertEquals(1,ledger.count());
+        ledger.claim(0,"minecraft:diamond");assertEquals(2,ledger.count());assertEquals(1,ledger.reserved("minecraft:dirt"));
+    }
+    @Test void bucketsStillRequireSeparateAllocationsForSeparateOccupiedStacks() {
+        var ledger=new SlotLedger();var layout=emptyLayout();layout.set(0,"minecraft:water_bucket");layout.set(1,"minecraft:lava_bucket");
+        assertTrue(ledger.arrange(layout));assertEquals(2,ledger.count());
+        assertTrue(ledger.releaseOne("minecraft:lava_bucket"));assertEquals(1,ledger.count());
+    }
     private List<String> emptyLayout() { return new ArrayList<>(Collections.nCopies(36,"")); }
     @Test void ordinaryRearrangementFollowsTheStacksInsteadOfPinningPositions() {
         var ledger=new SlotLedger(); ledger.claim(0,"minecraft:dirt");ledger.claim(1,"minecraft:iron_sword");
@@ -96,7 +120,7 @@ class SlotLedgerTest {
         bad.set(2, null);
         assertThrows(IllegalArgumentException.class, () -> new SlotLedger(bad));
     }
-    @Test void onlyExplicitResetReleasesClaims() {
+    @Test void explicitResetReleasesAllClaims() {
         var ledger = new SlotLedger();
         ledger.claim(0, "minecraft:oak_planks");
         ledger.reset();

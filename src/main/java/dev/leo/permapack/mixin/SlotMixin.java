@@ -22,6 +22,6 @@ public abstract class SlotMixin {
     private void place(ItemStack stack, CallbackInfoReturnable<Boolean> cir) {
         if (!(container instanceof Inventory inv)) return;
         SharedBag bag = PermaPack.forPlayer(inv.player);
-        if (bag != null && (getContainerSlot() < 36 ? !bag.permits(getContainerSlot(), stack) : !bag.canIntroduce(stack))) cir.setReturnValue(false);
+        if (bag != null && (getContainerSlot() < 36 ? !bag.permits(getContainerSlot(), stack) : SharedBag.nestedStorage(stack))) cir.setReturnValue(false);
     }
 }

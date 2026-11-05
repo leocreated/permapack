@@ -24,6 +24,7 @@ import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.saveddata.SavedData;
 import net.minecraft.world.level.saveddata.SavedDataType;
 import dev.leo.permapack.mixin.InventoryAccess;
+import net.minecraft.world.entity.EquipmentSlot;
 
 /** Server-thread-only inventory. Players share the actual backing list, never copies. */
 public final class SharedBag extends SavedData {
@@ -34,7 +35,9 @@ public final class SharedBag extends SavedData {
         ItemStack.OPTIONAL_CODEC.listOf().fieldOf("items").forGetter(s -> new ArrayList<>(s.items)),
         Codec.STRING.listOf().fieldOf("members").forGetter(s -> s.members.stream().map(UUID::toString).toList()),
         Codec.STRING.listOf().optionalFieldOf("retired", List.of()).forGetter(s -> s.retired.stream().map(UUID::toString).toList()),
-        ItemStack.CODEC.listOf().optionalFieldOf("returns", List.of()).forGetter(s -> s.returns)
+        ItemStack.CODEC.listOf().optionalFieldOf("returns", List.of()).forGetter(s -> s.returns),
+        Codec.INT.optionalFieldOf("rules_version",0).forGetter(s -> 1),
+        Codec.STRING.listOf().optionalFieldOf("equipment_migration",List.of()).forGetter(s -> s.equipmentMigration.stream().map(UUID::toString).toList())
     ).apply(i, SharedBag::new));
     public static final SavedDataType<SharedBag> TYPE = new SavedDataType<>(
         Identifier.fromNamespaceAndPath("permapack", "shared_inventory"), SharedBag::new, CODEC, null);
@@ -45,6 +48,28 @@ public final class SharedBag extends SavedData {
     public final Set<UUID> retired = new LinkedHashSet<>();
     public final List<ItemStack> returns = new ArrayList<>();
     private final Map<UUID, ServerPlayer> attached = new LinkedHashMap<>();
+    private final Set<UUID> equipmentMigration=new LinkedHashSet<>();
+    public static final class Origin {
+        final SharedBag owner; final String family; boolean active=true;
+        Origin(SharedBag owner,String family) { this.owner=owner;this.family=family; }
+    }
+    private final List<Origin> allocations=new ArrayList<>();
+    private final Set<Container> processingContainers=Collections.newSetFromMap(new IdentityHashMap<>());
+    private final Deque<MenuAction> actions=new ArrayDeque<>();
+    private record PersonalCursor(int slot,ItemStack stack) {}
+    private final Map<UUID,PersonalCursor> personalCursors=new HashMap<>();
+    private static final class MenuAction {
+        final ServerPlayer player;
+        final List<ItemStack> bagRefs,bagCopies,personal;
+        final ItemStack cursor;
+        MenuAction(ServerPlayer player,SharedBag bag) {
+            this.player=player;bagRefs=new ArrayList<>(bag.items);
+            bagCopies=bag.items.stream().map(ItemStack::copy).toList();
+            personal=new ArrayList<>();
+            for(int n=36;n<41;n++)personal.add(player.getInventory().getItem(n).copy());
+            cursor=player.containerMenu.getCarried().copy();
+        }
+    }
     private final Map<UUID, Drag> drags = new HashMap<>();
     private static final class Drag {
         final AbstractContainerMenu menu;
@@ -62,21 +87,37 @@ public final class SharedBag extends SavedData {
 
     public SharedBag() { ledger = new SlotLedger(); }
     private SharedBag(boolean active, boolean keep, List<String> bindings, List<ItemStack> stacks,
-                      List<String> members, List<String> retired, List<ItemStack> pending) {
+                      List<String> members, List<String> retired, List<ItemStack> pending, int rulesVersion, List<String> migration) {
         if (stacks.size() != 36) throw new IllegalArgumentException("Invalid PermaPack inventory length");
         this.active = active; this.keepOnDeath = keep; ledger = new SlotLedger(bindings);
         for (int n = 0; n < 36; n++) items.set(n, stacks.get(n));
         members.forEach(id -> this.members.add(UUID.fromString(id)));
         retired.forEach(id -> this.retired.add(UUID.fromString(id)));
         pending.forEach(s -> returns.add(s.copy()));
+        (rulesVersion<1?members:migration).forEach(id -> equipmentMigration.add(UUID.fromString(id)));
     }
 
     public static String id(ItemStack stack) { return BuiltInRegistries.ITEM.getKey(stack.getItem()).toString(); }
+    public static String key(ItemStack stack) { return SlotLedger.allocationKey(id(stack)); }
+    public static void origins(ItemStack stack,Set<Origin> origins) {
+        if(real(stack))((StackOriginAccess)(Object)stack).permapack$origins(origins);
+    }
+    private Set<Origin> origins(ItemStack stack) {
+        if(!real(stack))return Set.of();
+        Set<Origin> result=new LinkedHashSet<>();
+        for(Origin origin:((StackOriginAccess)(Object)stack).permapack$origins())
+            if(origin.active && origin.owner==this && allocations.contains(origin) && origin.family.equals(key(stack)))result.add(origin);
+        return result;
+    }
     public static boolean ghost(ItemStack stack) {
         CustomData data = stack.get(DataComponents.CUSTOM_DATA);
         return data != null && data.copyTag().getBoolean("permapack_reserved").orElse(false);
     }
     public static boolean real(ItemStack stack) { return !stack.isEmpty() && !ghost(stack); }
+    public static boolean emptyBag(Inventory inventory) {
+        for(int n=0;n<36;n++)if(real(inventory.getItem(n)))return false;
+        return true;
+    }
     public static ItemStack actual(ItemStack stack) { return ghost(stack) ? ItemStack.EMPTY : stack; }
     public boolean member(Player player) { return active && members.contains(player.getUUID()); }
     public boolean bound(Inventory inventory) { return inventory.getNonEquipmentItems() == items; }
@@ -102,12 +143,22 @@ public final class SharedBag extends SavedData {
         members.add(player.getUUID()); retired.remove(player.getUUID());
         attached.put(player.getUUID(), player);
         ((InventoryAccess) player.getInventory()).permapack$items(items);
+        if(equipmentMigration.remove(player.getUUID())) {
+            for(int n=36;n<41;n++) {
+                ItemStack equipped=player.getInventory().getItem(n);
+                // Old arbitrary stackable offhands cannot be distinguished from historic splits.
+                if(real(equipped) && (n<40 || equipped.getMaxStackSize()==1) && ledger.reserved(key(equipped))>storedStacks(key(equipped)))
+                    ledger.releaseOne(key(equipped));
+                origins(equipped,Set.of());
+            }
+        }
         normalize(); sync(); setDirty();
     }
     public void disconnect(ServerPlayer player) {
         drags.remove(player.getUUID());
         // Vanilla closes the menu first; recover its cursor even for disconnected players.
-        returnCursor(player.containerMenu);
+        returnCursor(player);
+        personalCursors.remove(player.getUUID());
         attached.remove(player.getUUID()); setDirty();
     }
     public void retireMirror(ServerPlayer player) {
@@ -126,6 +177,7 @@ public final class SharedBag extends SavedData {
         setDirty();
     }
     public void sync() {
+        if(!actions.isEmpty())return;
         for (ServerPlayer p : players()) {
             if (p.connection == null) continue;
             p.inventoryMenu.broadcastChanges();
@@ -133,6 +185,7 @@ public final class SharedBag extends SavedData {
         }
     }
     public void resync(ServerPlayer player) {
+        if(!actions.isEmpty())return;
         normalize();
         if (player.connection != null) { player.inventoryMenu.broadcastFullState(); player.containerMenu.broadcastFullState(); }
         sync();
@@ -142,30 +195,205 @@ public final class SharedBag extends SavedData {
             p.sendOverlayMessage(Component.literal("PermaPack: " + message).withStyle(ChatFormatting.YELLOW));
     }
 
+    public void beginTransfer(ServerPlayer player) {
+        if(actions.isEmpty())normalize();
+        observeProcessing(player);
+        actions.push(new MenuAction(player,this));
+    }
+    public void endTransfer(ServerPlayer player) {
+        if(!actions.isEmpty() && actions.peek().player==player) {
+            MenuAction action=actions.pop();
+            observeProcessing(player);
+            ItemStack cursor=player.containerMenu.getCarried();
+            int consumed=real(action.cursor)&&ItemStack.isSameItemSameComponents(action.cursor,cursor)?action.cursor.getCount()-cursor.getCount():action.cursor.getCount();
+            if(consumed>0 && real(action.cursor))for(int n=0;n<5;n++) {
+                ItemStack after=player.getInventory().getItem(36+n), before=action.personal.get(n);
+                int previous=real(before)&&ItemStack.isSameItemSameComponents(before,after)?before.getCount():0;
+                if(real(after)&&ItemStack.isSameItemSameComponents(after,action.cursor)&&after.getCount()>previous) {
+                    Set<Origin> lineage=new LinkedHashSet<>(origins(after));lineage.addAll(origins(action.cursor));origins(after,lineage);
+                }
+            }
+            if(!real(cursor))personalCursors.remove(player.getUUID());
+            else {
+                PersonalCursor previous=personalCursors.get(player.getUUID());
+                int personalSource=-1;
+                if(origins(cursor).isEmpty()) for(int n=0;n<5;n++) {
+                    ItemStack before=action.personal.get(n), after=player.getInventory().getItem(36+n);
+                    if(real(before) && ItemStack.isSameItemSameComponents(before,cursor) &&
+                        (!real(after)||!ItemStack.isSameItemSameComponents(before,after)||after.getCount()<before.getCount()))personalSource=36+n;
+                }
+                if(personalSource>=0)personalCursors.put(player.getUUID(),new PersonalCursor(personalSource,cursor));
+                else if(previous!=null && real(action.cursor) && ItemStack.isSameItemSameComponents(action.cursor,cursor))
+                    personalCursors.put(player.getUUID(),new PersonalCursor(previous.slot,cursor));
+                else personalCursors.remove(player.getUUID());
+                boolean grew=!real(action.cursor)||!ItemStack.isSameItemSameComponents(action.cursor,cursor)||cursor.getCount()>action.cursor.getCount();
+                if(grew && personalSource<0) {
+                    Set<Origin> lineage=new LinkedHashSet<>(origins(cursor));
+                    for(int n=0;n<36;n++) {
+                        ItemStack before=action.bagCopies.get(n), reference=action.bagRefs.get(n);
+                        boolean remains=items.stream().anyMatch(s->s==reference);
+                        if(real(before) && ItemStack.isSameItemSameComponents(before,cursor) && (!remains||reference.getCount()<before.getCount()))
+                            lineage.addAll(origins(before));
+                    }
+                    origins(cursor,lineage);
+                }
+            }
+        }
+        if(actions.isEmpty()){normalize();sync();setDirty();}
+    }
+    public void personalChanged() { normalize();setDirty(); }
+    private void observeProcessing(ServerPlayer player) {
+        for(AbstractContainerMenu menu:player.containerMenu==player.inventoryMenu?List.of(player.inventoryMenu):List.of(player.inventoryMenu,player.containerMenu))
+            if(processing(menu))for(Slot slot:menu.slots)if(slot.container!=player.getInventory() && !(slot instanceof ResultSlot))processingContainers.add(slot.container);
+    }
+    private void invalidateAllocations() {
+        allocations.forEach(o->o.active=false);allocations.clear();processingContainers.clear();
+    }
+    private boolean personalCursor(ServerPlayer player) {
+        return personalCursors.containsKey(player.getUUID()) && origins(player.containerMenu.getCarried()).isEmpty();
+    }
+    private boolean originInUse(Origin origin,ItemStack ignored) {
+        for(ItemStack stack:items) if(stack!=ignored && origins(stack).contains(origin))return true;
+        for(ServerPlayer player:players()) {
+            ItemStack cursor=player.containerMenu.getCarried();
+            if(cursor!=ignored && origins(cursor).contains(origin))return true;
+            for(AbstractContainerMenu menu:player.containerMenu==player.inventoryMenu?List.of(player.inventoryMenu):List.of(player.inventoryMenu,player.containerMenu))
+                for(Slot slot:menu.slots) if(slot.container!=player.getInventory() && slot.getItem()!=ignored && origins(slot.getItem()).contains(origin))return true;
+        }
+        for(Container container:processingContainers)for(int n=0;n<container.getContainerSize();n++) {
+            ItemStack stack=container.getItem(n);if(stack!=ignored&&origins(stack).contains(origin))return true;
+        }
+        return false;
+    }
+    private void releaseOrigin(Origin origin) {
+        if(origin.active && ledger.releaseOne(origin.family))origin.active=false;
+    }
+    private void releaseEquipmentOrigins() {
+        Set<Origin> equipped=new LinkedHashSet<>();
+        for(ServerPlayer player:players())for(int n=36;n<41;n++)equipped.addAll(origins(player.getInventory().getItem(n)));
+        for(Origin origin:equipped)if(!originInUse(origin,null))releaseOrigin(origin);
+        for(ServerPlayer player:players())for(int n=36;n<41;n++)origins(player.getInventory().getItem(n),Set.of());
+    }
+    private void assignOrigins() {
+        for(Origin origin:new ArrayList<>(allocations))if(origin.active) {
+            long count=allocations.stream().filter(o->o.active&&o.family.equals(origin.family)).count();
+            if(count>ledger.reserved(origin.family)) {
+                Origin excess=allocations.stream().filter(o->o.active&&o.family.equals(origin.family)&&!originInUse(o,null)).findFirst().orElse(origin);
+                excess.active=false;
+            }
+        }
+        allocations.removeIf(o->!o.active);
+        for(String family:new LinkedHashSet<>(ledger.snapshot()))if(!family.isEmpty()) {
+            int have=(int)allocations.stream().filter(o->o.family.equals(family)).count();
+            while(have++<ledger.reserved(family))allocations.add(new Origin(this,family));
+        }
+        Set<Origin> used=new HashSet<>();List<ItemStack> pending=new ArrayList<>();
+        for(ItemStack stack:items)if(real(stack)) {
+            Origin selected=origins(stack).stream().filter(o->!used.contains(o)).findFirst().orElse(null);
+            if(selected==null)pending.add(stack);
+            else {used.add(selected);origins(stack,Set.of(selected));}
+        }
+        for(ItemStack stack:pending) {
+            Origin selected=allocations.stream().filter(o->o.active&&o.family.equals(key(stack))&&!used.contains(o))
+                .filter(o->players().stream().noneMatch(p->origins(p.containerMenu.getCarried()).contains(o))).findFirst().orElse(null);
+            if(selected==null)selected=allocations.stream().filter(o->o.active&&o.family.equals(key(stack))&&!used.contains(o)).findFirst().orElseThrow();
+            used.add(selected);origins(stack,Set.of(selected));
+        }
+        List<ItemStack> projection=items.stream().filter(SharedBag::real).map(ItemStack::copy).collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        for(ServerPlayer player:players()) {
+            ItemStack cursor=player.containerMenu.getCarried();
+            if(!real(cursor)||personalCursor(player))continue;
+            int remaining=cursor.getCount();Set<Origin> merged=new LinkedHashSet<>();
+            for(ItemStack target:projection)if(ItemStack.isSameItemSameComponents(target,cursor)) {
+                int amount=Math.min(remaining,target.getMaxStackSize()-target.getCount());
+                if(amount>0){target.grow(amount);remaining-=amount;merged.addAll(origins(target));}
+                if(remaining==0)break;
+            }
+            if(origins(cursor).isEmpty()) {
+                if(remaining==0&&!merged.isEmpty())origins(cursor,merged);
+                else {
+                    Origin selected=allocations.stream().filter(o->o.active&&o.family.equals(key(cursor))&&!used.contains(o))
+                        .filter(o->players().stream().noneMatch(p->p!=player&&origins(p.containerMenu.getCarried()).contains(o))).findFirst().orElse(null);
+                    if(selected==null)selected=allocations.stream().filter(o->o.active&&o.family.equals(key(cursor))).findFirst().orElse(null);
+                    if(selected!=null){origins(cursor,Set.of(selected));used.add(selected);}
+                }
+            }
+            while(remaining>0){int amount=Math.min(remaining,cursor.getMaxStackSize());projection.add(cursor.copyWithCount(amount));remaining-=amount;}
+        }
+    }
+
+    private boolean canSwapPersonal(ServerPlayer player,int bagSlot,int personalSlot) {
+        ItemStack outgoing=actual(items.get(bagSlot)), incoming=actual(player.getInventory().getItem(personalSlot));
+        if(nestedStorage(outgoing)||nestedStorage(incoming))return false;
+        SlotLedger plan=new SlotLedger(ledger.snapshot());
+        for(Origin origin:origins(outgoing))if(!originInUse(origin,outgoing))plan.releaseOne(origin.family);
+        List<String> contents=contentIds();contents.set(bagSlot,real(incoming)?key(incoming):"");
+        return plan.canArrange(contents);
+    }
+    public boolean swapPersonal(ServerPlayer player,int bagSlot,int personalSlot) {
+        if(player.isSpectator()||!canSwapPersonal(player,bagSlot,personalSlot)) {resync(player);return false;}
+        boolean own=actions.isEmpty();if(own)beginTransfer(player);
+        try {
+            ItemStack outgoing=actual(items.get(bagSlot)).copy(), incoming=actual(player.getInventory().getItem(personalSlot)).copy();
+            origins(incoming,Set.of()); items.set(bagSlot,incoming);
+            player.getInventory().setItem(personalSlot,outgoing);player.stopUsingItem();
+        } finally {if(own)endTransfer(player);}
+        return true;
+    }
+    public boolean canEquipFromHand(ServerPlayer player,ItemStack held,EquipmentSlot slot) {
+        ItemStack old=player.getItemBySlot(slot);
+        if(held==player.getOffhandItem())return held.getCount()==1||!real(old)||canIntroduce(old);
+        if(held.getCount()>1)return !real(old)||canIntroduce(old);
+        int personal=slot==EquipmentSlot.OFFHAND?40:36+slot.getIndex();
+        return canSwapPersonal(player,player.getInventory().getSelectedSlot(),personal);
+    }
+    public boolean canTransform(ServerPlayer player,ItemStack held,ItemStack result) {
+        if(!real(result))return true;
+        if(nestedStorage(result))return false;
+        if(held==player.getOffhandItem())return held.getCount()==1||canIntroduce(result);
+        List<ItemStack> products=new ArrayList<>();products.add(result);
+        if(held.getCount()>1)products.add(held.copyWithCount(held.getCount()-1));
+        return canReserve(capacityPlan(products,held));
+    }
+
     /** Only the exact stack created by the operator's command can bypass drop recovery. */
     public boolean permitsCommandDrop(ItemStack stack) { return stack == commandDrop; }
     public int dropHeld(ServerPlayer player, boolean wholeStack) {
         if (!member(player) || !bound(player.getInventory()) || !player.isAlive()) return 0;
-        ItemStack held = items.get(player.getInventory().getSelectedSlot());
-        if (!real(held)) return 0;
-        int amount = wholeStack ? held.getCount() : 1;
-        ItemStack dropped = held.split(amount);
+        normalize();int selected=player.getInventory().getSelectedSlot();
+        ItemStack held = items.get(selected);
+        if(!real(held) && !ghost(held))return 0;
+        String family=ledger.at(selected);
+        if(ghost(held)) {
+            Origin origin=allocations.stream().filter(o->o.active&&o.family.equals(family)&&!originInUse(o,null)).findFirst().orElse(null);
+            if(origin==null)origin=allocations.stream().filter(o->o.active&&o.family.equals(family)).findFirst().orElse(null);
+            ledger.release(selected);if(origin!=null)origin.active=false;
+            items.set(selected,ItemStack.EMPTY);normalize();sync();setDirty();return 1;
+        }
+        int amount = held.getCount();
+        ItemStack dropped = held.copy();
         boolean success = false;
         commandDrop = dropped;
         try {
             success = player.drop(dropped, false, true) != null;
+            if(success) {
+                Origin origin=origins(held).stream().findFirst().orElse(null);
+                items.set(selected,ItemStack.EMPTY);
+                ledger.release(selected);if(origin!=null)origin.active=false;
+                origins(dropped,Set.of());
+            }
             return success ? amount : 0;
         } finally {
             commandDrop = null;
-            if (!success) held.grow(amount);
             normalize(); sync(); setDirty();
         }
     }
 
     public void normalize() {
-        if (normalizing || !active) return;
+        if (normalizing || !active || !actions.isEmpty()) return;
         normalizing = true;
         try {
+            releaseEquipmentOrigins();
             List<String> contents=contentIds();
             while(!ledger.arrange(contents)) {
                 // Recover an unexpected extra stack from another mod without releasing any allocation.
@@ -177,16 +405,19 @@ public final class SharedBag extends SavedData {
                 if(excess<0) throw new IllegalStateException("Unable to arrange permanent allocations");
                 defer(items.get(excess)); items.set(excess,ItemStack.EMPTY); contents.set(excess,"");
             }
+            Map<String,Integer> needed=capacityPlan(List.of(),null);
+            if(canReserve(needed))reserve(needed);
+            assignOrigins();
             for(int n=0;n<36;n++) if(!real(items.get(n))) items.set(n,placeholder(n));
         } finally { normalizing = false; }
     }
     private List<String> contentIds() {
         List<String> contents=new ArrayList<>(36);
-        for(ItemStack stack:items) contents.add(real(stack)?id(stack):"");
+        for(ItemStack stack:items) contents.add(real(stack)?key(stack):"");
         return contents;
     }
     private int storedStacks(String item) {
-        return (int)items.stream().filter(SharedBag::real).filter(s->id(s).equals(item)).count();
+        return (int)items.stream().filter(SharedBag::real).filter(s->key(s).equals(SlotLedger.allocationKey(item))).count();
     }
     private Map<String,Integer> capacityPlan(List<ItemStack> additions,ItemStack ignored) {
         List<ItemStack> simulated=new ArrayList<>();
@@ -194,7 +425,7 @@ public final class SharedBag extends SavedData {
         List<ItemStack> pending=new ArrayList<>(additions);
         for(ServerPlayer p:players()) {
             ItemStack cursor=p.containerMenu.getCarried();
-            if(cursor!=ignored && real(cursor)) pending.add(cursor);
+            if(cursor!=ignored && real(cursor) && !personalCursor(p)) pending.add(cursor);
         }
         for(ItemStack stack:pending) if(real(stack)) {
             int remaining=stack.getCount();
@@ -209,7 +440,7 @@ public final class SharedBag extends SavedData {
             }
         }
         Map<String,Integer> needed=new LinkedHashMap<>();
-        for(ItemStack stack:simulated) needed.merge(id(stack),1,Integer::sum);
+        for(ItemStack stack:simulated) needed.merge(key(stack),1,Integer::sum);
         return needed;
     }
     private boolean canReserve(Map<String,Integer> needed) {
@@ -241,7 +472,7 @@ public final class SharedBag extends SavedData {
         if(slot<0 || slot>=36) return false;
         if(!real(stack)) return true;
         if(nestedStorage(stack)) return false;
-        List<String> contents=contentIds(); contents.set(slot,id(stack));
+        List<String> contents=contentIds(); contents.set(slot,key(stack));
         return ledger.canArrange(contents);
     }
     public void write(int slot, ItemStack stack) {
@@ -275,7 +506,7 @@ public final class SharedBag extends SavedData {
                 if (amount > 0) { target.grow(amount); incoming.shrink(amount); toPlace-=amount; }
             }
         }
-        String incomingId=id(incoming);
+        String incomingId=key(incoming);
         for (int pass = 0; pass < 2 && toPlace>0; pass++) {
             for (int n = 0; n < 36 && toPlace>0; n++) {
                 if (real(items.get(n))) continue;
@@ -297,15 +528,39 @@ public final class SharedBag extends SavedData {
         if (real(stack)) { returns.add(stack.copy()); setDirty(); }
     }
     public void returnStack(ItemStack stack) {
+        returnStack(null,stack);
+    }
+    public void returnStack(ServerPlayer player,ItemStack stack) {
         if (!real(stack)) return;
         boolean old = returning; returning = true;
-        try { insert(stack); if (!stack.isEmpty()) { defer(stack); stack.setCount(0); } }
+        try {
+            insert(stack);
+            PersonalCursor source=player==null?null:personalCursors.get(player.getUUID());
+            if(real(stack)&&source!=null&&source.stack==stack) {
+                var inv=player.getInventory();int menuSlot=player.inventoryMenu.findSlot(inv,source.slot).orElse(-1);
+                ItemStack target=inv.getItem(source.slot);
+                if(menuSlot>=0&&(!real(target)||ItemStack.isSameItemSameComponents(target,stack))&&player.inventoryMenu.getSlot(menuSlot).mayPlace(stack)) {
+                    int room=player.inventoryMenu.getSlot(menuSlot).getMaxStackSize(stack)-(real(target)?target.getCount():0);
+                    int amount=Math.min(stack.getCount(),room);
+                    beginTransfer(player);
+                    try {
+                        if(amount>0) {
+                            if(real(target)) {target.grow(amount);stack.shrink(amount);}
+                            else inv.setItem(source.slot,stack.split(amount));
+                        }
+                    }
+                    finally {endTransfer(player);}
+                }
+            }
+            if (!stack.isEmpty()) { defer(stack); stack.setCount(0); }
+            if(player!=null&&source!=null&&source.stack==stack)personalCursors.remove(player.getUUID());
+        }
         finally { returning = old; }
     }
-    public void returnCursor(AbstractContainerMenu menu) {
+    public void returnCursor(ServerPlayer player) {
+        AbstractContainerMenu menu=player.containerMenu;
         ItemStack cursor = menu.getCarried();
-        menu.setCarried(ItemStack.EMPTY);
-        returnStack(cursor);
+        returnStack(player,cursor);menu.setCarried(ItemStack.EMPTY);
     }
     private void drainReturns() {
         boolean old = returning; returning = true;
@@ -375,8 +630,10 @@ public final class SharedBag extends SavedData {
             int previous=actual(slot.getItem()).getCount();
             int amount=Math.min(remaining,Math.min(portion,Math.min(carried.getMaxStackSize(),slot.getMaxStackSize(carried))-previous));
             if(amount<=0) continue;
-            writes.put(slot,carried.copyWithCount(previous+amount)); remaining-=amount;
-            if(slot.container==player.getInventory() && slot.getContainerSlot()<36) contents.set(slot.getContainerSlot(),id(carried));
+            ItemStack write=carried.copyWithCount(previous+amount);
+            if(real(actual(slot.getItem())) && slot.container==player.getInventory()&&slot.getContainerSlot()<36)origins(write,origins(actual(slot.getItem())));
+            writes.put(slot,write); remaining-=amount;
+            if(slot.container==player.getInventory() && slot.getContainerSlot()<36) contents.set(slot.getContainerSlot(),key(carried));
         }
         if(!ledger.arrange(contents)) {
             tell(player,"Splitting into more stacks needs another unused permanent allocation.");resync(player);return true;
@@ -389,10 +646,7 @@ public final class SharedBag extends SavedData {
         player.getInventory().setChanged(); normalize();resync(player);setDirty();return true;
     }
     public void afterMenu(ServerPlayer player) {
-        ensureClaim(player.containerMenu.getCarried());
-        Map<String,Integer> needed=capacityPlan(List.of(),null);
-        if(canReserve(needed)) reserve(needed);
-        normalize(); sync(); setDirty();
+        endTransfer(player);
     }
     public boolean processing(AbstractContainerMenu menu) {
         return menu instanceof InventoryMenu || menu instanceof AbstractCraftingMenu ||
@@ -406,6 +660,7 @@ public final class SharedBag extends SavedData {
     public boolean beforeClick(AbstractContainerMenu menu, int index, int button, ContainerInput input, ServerPlayer player) {
         Slot slot = index >= 0 && index < menu.slots.size() ? menu.slots.get(index) : null;
         boolean bagSlot = slot != null && slot.container == player.getInventory() && slot.getContainerSlot() < 36;
+        boolean personalSlot=slot!=null&&slot.container==player.getInventory()&&slot.getContainerSlot()>=36;
         if (input == ContainerInput.QUICK_CRAFT) {
             return drag(menu,index,button,player);
         }
@@ -419,6 +674,14 @@ public final class SharedBag extends SavedData {
         // Number-key swaps are fully atomic, including both permanent reservations.
         if (input == ContainerInput.SWAP && bagSlot && button >= 0 && button < 9) {
             swapSlots(slot.getContainerSlot(), button); resync(player); return true;
+        }
+        if(input==ContainerInput.SWAP && bagSlot && button==Inventory.SLOT_OFFHAND) {
+            swapPersonal(player,slot.getContainerSlot(),Inventory.SLOT_OFFHAND);return true;
+        }
+        if(input==ContainerInput.SWAP && personalSlot && button>=0&&button<9) {
+            ItemStack incoming=actual(items.get(button));
+            if(slot.mayPickup(player)&&(!real(incoming)||slot.mayPlace(incoming)))swapPersonal(player,button,slot.getContainerSlot());
+            return true;
         }
         if (slot == null) return false;
         ItemStack carried = menu.getCarried(); ItemStack target = slot.getItem();
@@ -435,7 +698,7 @@ public final class SharedBag extends SavedData {
         if (bagSlot && input == ContainerInput.PICKUP && real(carried) && !preparePlace(slot.getContainerSlot(), carried)) {
             tell(player, "Creating another stored stack needs an unused permanent allocation."); resync(player); return true;
         }
-        if (!bagSlot && real(target) && (input == ContainerInput.QUICK_MOVE || input == ContainerInput.SWAP || !real(carried) || slot instanceof ResultSlot)) {
+        if (!bagSlot && (!personalSlot||input==ContainerInput.QUICK_MOVE) && real(target) && (input == ContainerInput.QUICK_MOVE || input == ContainerInput.SWAP || !real(carried) || slot instanceof ResultSlot)) {
             ItemStack taking=input==ContainerInput.PICKUP && button==1 && !real(carried)?target.copyWithCount((target.getCount()+1)/2):target;
             boolean fits=input==ContainerInput.QUICK_MOVE && !(slot instanceof ResultSlot)?ledger.canIntroduce(id(target)):canIntroduce(taking);
             if (!fits || !canCraftRemainders(menu, slot, player)) {
@@ -443,7 +706,7 @@ public final class SharedBag extends SavedData {
             }
         }
         // For external number-key pickups, reserve/move the destination before vanilla puts the item there.
-        if (!bagSlot && input == ContainerInput.SWAP && button >= 0 && button < 9 && real(target)) {
+        if (!bagSlot && !personalSlot && input == ContainerInput.SWAP && button >= 0 && button < 9 && real(target)) {
             if (real(player.getInventory().getItem(button)) || !preparePlace(button, target)) {
                 tell(player, "Take that item with a normal click first, then swap inventory slots."); resync(player); return true;
             }
@@ -464,7 +727,7 @@ public final class SharedBag extends SavedData {
 
     public void onDeath(ServerPlayer player) {
         drags.clear();
-        returnCursor(player.containerMenu);
+        returnCursor(player);
         if (!keepOnDeath) {
             for (ServerPlayer p : players()) p.closeContainer();
             for (ServerPlayer p : players()) { p.containerMenu.setCarried(ItemStack.EMPTY); p.getInventory().clearContent(); }
@@ -477,14 +740,15 @@ public final class SharedBag extends SavedData {
         internal = true;
         try {
             for (ServerPlayer p : players()) { p.closeContainer(); p.containerMenu.setCarried(ItemStack.EMPTY); p.getInventory().clearContent(); }
-            items.clear(); returns.clear(); ledger.reset();
+            items.clear(); returns.clear(); ledger.reset(); invalidateAllocations();personalCursors.clear();equipmentMigration.clear();
+            for(ServerPlayer p:players())for(int n=36;n<41;n++)origins(p.getInventory().getItem(n),Set.of());
         } finally { internal = false; }
         sync(); setDirty();
     }
     public boolean start(Collection<ServerPlayer> players) {
         if (active || players.isEmpty() || players.size() > 3) return false;
-        for (ServerPlayer p : players) { p.closeContainer(); if (!p.getInventory().isEmpty()) return false; }
-        ledger.reset(); items.clear(); returns.clear(); members.clear(); attached.clear(); drags.clear(); active = true;
+        for (ServerPlayer p : players) { p.closeContainer(); if (!emptyBag(p.getInventory())) return false; }
+        ledger.reset(); items.clear(); returns.clear(); members.clear(); attached.clear(); drags.clear();invalidateAllocations();personalCursors.clear();equipmentMigration.clear(); active = true;
         for (ServerPlayer p : players) { p.setGameMode(GameType.SURVIVAL); join(p); }
         setDirty(); return true;
     }
@@ -494,7 +758,7 @@ public final class SharedBag extends SavedData {
         if (members.size() + newcomers > 3) return false;
         for (ServerPlayer p : candidates) if (!member(p)) {
             p.closeContainer();
-            if (!p.getInventory().isEmpty()) return false;
+            if (!emptyBag(p.getInventory())) return false;
         }
         for (ServerPlayer p : candidates) { p.setGameMode(GameType.SURVIVAL); join(p); }
         return true;
@@ -502,7 +766,7 @@ public final class SharedBag extends SavedData {
     public boolean stop(ServerPlayer recipient) {
         for (ServerPlayer p : players()) p.closeContainer();
         drainReturns(); if (!returns.isEmpty()) return false;
-        if (!member(recipient) && !recipient.getInventory().isEmpty()) return false;
+        if (!member(recipient) && !emptyBag(recipient.getInventory())) return false;
         NonNullList<ItemStack> delivered = NonNullList.withSize(36, ItemStack.EMPTY);
         for (int n = 0; n < 36; n++) delivered.set(n, actual(items.get(n)).copy());
         active = false;
@@ -510,6 +774,8 @@ public final class SharedBag extends SavedData {
         retired.addAll(members); retired.remove(recipient.getUUID());
         ((InventoryAccess) recipient.getInventory()).permapack$items(delivered);
         for (ServerPlayer p : players()) if (p.connection != null) p.inventoryMenu.broadcastFullState();
-        attached.clear(); members.clear(); items.clear(); ledger.reset(); drags.clear(); setDirty(); return true;
+        for(ItemStack stack:delivered)origins(stack,Set.of());
+        for(ServerPlayer p:players())for(int n=36;n<41;n++)origins(p.getInventory().getItem(n),Set.of());
+        attached.clear(); members.clear(); items.clear(); ledger.reset(); drags.clear();invalidateAllocations();personalCursors.clear();equipmentMigration.clear(); setDirty(); return true;
     }
 }

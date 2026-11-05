@@ -18,7 +18,12 @@ public abstract class MenuMixin {
     @Inject(method="clicked", at=@At("HEAD"), cancellable=true)
     private void guard(int slot, int button, ContainerInput input, Player player, CallbackInfo ci) {
         SharedBag bag = PermaPack.forPlayer(player);
-        if (bag != null && bag.beforeClick((AbstractContainerMenu)(Object)this, slot, button, input, (ServerPlayer)player)) ci.cancel();
+        if (bag != null) {
+            bag.beginTransfer((ServerPlayer)player);
+            if(bag.beforeClick((AbstractContainerMenu)(Object)this, slot, button, input, (ServerPlayer)player)) {
+                bag.afterMenu((ServerPlayer)player);ci.cancel();
+            }
+        }
     }
     @Inject(method="clicked", at=@At("RETURN"))
     private void after(int slot, int button, ContainerInput input, Player player, CallbackInfo ci) {
@@ -26,7 +31,7 @@ public abstract class MenuMixin {
     }
     @Inject(method="dropOrPlaceInInventory", at=@At("HEAD"), cancellable=true)
     private static void recover(Player player, ItemStack stack, CallbackInfo ci) {
-        SharedBag bag = PermaPack.forPlayer(player); if (bag != null) { bag.returnStack(stack); ci.cancel(); }
+        SharedBag bag = PermaPack.forPlayer(player); if (bag != null) { bag.returnStack((ServerPlayer)player,stack); ci.cancel(); }
     }
     @Inject(method="moveItemStackTo", at=@At("HEAD"), cancellable=true)
     private void sharedQuickMove(ItemStack stack, int start, int end, boolean reverse, CallbackInfoReturnable<Boolean> cir) {

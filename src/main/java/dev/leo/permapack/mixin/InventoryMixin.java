@@ -31,7 +31,11 @@ public abstract class InventoryMixin {
         SharedBag bag = PermaPack.forPlayer(player);
         if (bag == null || !bag.bound((Inventory)(Object)this)) return;
         if (slot < 36) { bag.write(slot, stack); ci.cancel(); }
-        else if (SharedBag.real(stack)) bag.ensureClaim(stack);
+    }
+    @Inject(method="setItem", at=@At("RETURN"))
+    private void personalWrite(int slot,ItemStack stack,CallbackInfo ci) {
+        SharedBag bag=PermaPack.forPlayer(player);
+        if(bag!=null&&slot>=36)bag.personalChanged();
     }
     @Inject(method="setSelectedItem", at=@At("HEAD"), cancellable=true)
     private void selected(ItemStack stack, CallbackInfoReturnable<ItemStack> cir) {
@@ -44,7 +48,7 @@ public abstract class InventoryMixin {
     @Inject(method="placeItemBackInInventory(Lnet/minecraft/world/item/ItemStack;Z)V", at=@At("HEAD"), cancellable=true)
     private void returnItems(ItemStack stack, boolean send, CallbackInfo ci) {
         SharedBag bag = PermaPack.forPlayer(player);
-        if (bag != null && bag.bound((Inventory)(Object)this)) { bag.returnStack(stack); ci.cancel(); }
+        if (bag != null && bag.bound((Inventory)(Object)this)) { bag.returnStack((net.minecraft.server.level.ServerPlayer)player,stack); ci.cancel(); }
     }
     @Inject(method="pickSlot", at=@At("HEAD"), cancellable=true)
     private void pick(int slot, CallbackInfo ci) {

@@ -28,13 +28,13 @@ public final class ConversionGuard {
         if (state != null && !(state.is(Blocks.CAULDRON) || state.is(Blocks.WATER_CAULDRON) || state.is(Blocks.LAVA_CAULDRON) || state.is(Blocks.POWDER_SNOW_CAULDRON) || state.is(Blocks.BEEHIVE) || state.is(Blocks.BEE_NEST))) return InteractionResult.PASS;
         if (entity != null && !(entity instanceof Bucketable && held.is(Items.WATER_BUCKET) || entity instanceof AbstractCow && held.is(Items.BUCKET) || entity instanceof MushroomCow && held.is(Items.BOWL))) return InteractionResult.PASS;
         var remainder = held.get(DataComponents.USE_REMAINDER);
-        if (remainder != null && !bag.canIntroduce(remainder.convertInto().create())) return full(bag, player);
+        if (remainder != null && !bag.canTransform((net.minecraft.server.level.ServerPlayer)player,held,remainder.convertInto().create())) return full(bag, player);
         ItemStack result = ItemStack.EMPTY;
         if (entity instanceof Bucketable bucketable && held.is(Items.WATER_BUCKET)) result = bucketable.getBucketItemStack();
         else if (entity instanceof AbstractCow && held.is(Items.BUCKET)) result = new ItemStack(Items.MILK_BUCKET);
         else if (entity instanceof MushroomCow && held.is(Items.BOWL)) {
             // Both stew variants are possible without consuming the cow's stored effect to inspect it.
-            if (!bag.canIntroduce(new ItemStack(Items.MUSHROOM_STEW)) || !bag.canIntroduce(new ItemStack(Items.SUSPICIOUS_STEW))) return full(bag, player);
+            if (!bag.canTransform((net.minecraft.server.level.ServerPlayer)player,held,new ItemStack(Items.MUSHROOM_STEW)) || !bag.canTransform((net.minecraft.server.level.ServerPlayer)player,held,new ItemStack(Items.SUSPICIOUS_STEW))) return full(bag, player);
         } else if (held.is(Items.BUCKET)) {
             if (state != null && state.is(Blocks.WATER_CAULDRON)) result = new ItemStack(Items.WATER_BUCKET);
             else if (state != null && state.is(Blocks.LAVA_CAULDRON)) result = new ItemStack(Items.LAVA_BUCKET);
@@ -52,7 +52,7 @@ public final class ConversionGuard {
             boolean breath = !level.getEntitiesOfClass(AreaEffectCloud.class, player.getBoundingBox().inflate(2), cloud -> cloud.isAlive() && cloud.getOwner() instanceof EnderDragon).isEmpty();
             result = new ItemStack(breath ? Items.DRAGON_BREATH : state != null && (state.is(Blocks.BEEHIVE) || state.is(Blocks.BEE_NEST)) ? Items.HONEY_BOTTLE : Items.POTION);
         }
-        if (!bag.canIntroduce(result)) return full(bag, player);
+        if (!bag.canTransform((net.minecraft.server.level.ServerPlayer)player,held,result)) return full(bag, player);
         return InteractionResult.PASS;
     }
     private static InteractionResult full(SharedBag bag, Player player) {

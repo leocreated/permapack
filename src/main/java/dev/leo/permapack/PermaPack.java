@@ -40,7 +40,7 @@ public final class PermaPack implements ModInitializer {
             SharedBag bag = get(server); ServerPlayer p = handler.player;
             bag.retireMirror(p);
             if (bag.active && bag.members.contains(p.getUUID())) bag.join(p);
-            else if (bag.active && bag.members.size() < 3 && p.getInventory().isEmpty() && p.gameMode.getGameModeForPlayer() == net.minecraft.world.level.GameType.SURVIVAL) bag.join(p);
+            else if (bag.active && bag.members.size() < 3 && SharedBag.emptyBag(p.getInventory()) && p.gameMode.getGameModeForPlayer() == net.minecraft.world.level.GameType.SURVIVAL) bag.join(p);
             if (bag.member(p)) p.sendSystemMessage(Component.literal("PermaPack joined: one shared bag, permanent slots. Use /permapack status."));
         });
         ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
@@ -74,8 +74,8 @@ public final class PermaPack implements ModInitializer {
                 .then(Commands.literal("start").requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS)).executes(ctx -> {
                     var bag = get(ctx.getSource().getServer());
                     boolean success = bag.start(ctx.getSource().getServer().getPlayerList().getPlayers());
-                    if (!success) { ctx.getSource().sendFailure(Component.literal("Start needs 1-3 online players with empty inventories, armor and crafting grids, and no active run.")); return 0; }
-                    ctx.getSource().sendSuccess(() -> Component.literal("PermaPack started. Friends joining with empty inventories will share this bag (maximum 3)."), true); return 1;
+                    if (!success) { ctx.getSource().sendFailure(Component.literal("Start needs 1-3 online players with empty bags and crafting grids, and no active run. Personal armor and offhands are allowed.")); return 0; }
+                    ctx.getSource().sendSuccess(() -> Component.literal("PermaPack started. Friends joining with empty bags will share this inventory (maximum 3). Armor and offhands stay personal."), true); return 1;
                 }))
                 .then(Commands.literal("join").requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
                     .then(Commands.argument("players", EntityArgument.players()).executes(ctx -> {
@@ -87,8 +87,8 @@ public final class PermaPack implements ModInitializer {
                         return players.size();
                     })))
                 .then(Commands.literal("drop").requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
-                    .executes(ctx -> drop(ctx.getSource(), false))
-                    .then(Commands.literal("stack").executes(ctx -> drop(ctx.getSource(), true))))
+                    .executes(ctx -> drop(ctx.getSource()))
+                    .then(Commands.literal("stack").executes(ctx -> drop(ctx.getSource()))))
                 .then(Commands.literal("death").requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
                     .then(Commands.literal("keep").executes(ctx -> { var b = get(ctx.getSource().getServer()); b.keepOnDeath = true; b.setDirty(); ctx.getSource().sendSuccess(() -> Component.literal("Team keeps items and reservations on death."), true); return 1; }))
                     .then(Commands.literal("lose").executes(ctx -> { var b = get(ctx.getSource().getServer()); b.keepOnDeath = false; b.setDirty(); ctx.getSource().sendSuccess(() -> Component.literal("A death empties the team's items. Reservations remain."), true); return 1; })))
@@ -105,14 +105,14 @@ public final class PermaPack implements ModInitializer {
         });
     }
 
-    private static int drop(CommandSourceStack source, boolean wholeStack) throws CommandSyntaxException {
+    private static int drop(CommandSourceStack source) throws CommandSyntaxException {
         ServerPlayer player = source.getPlayerOrException();
         SharedBag bag = forPlayer(player);
         if (bag == null) {
             source.sendFailure(Component.literal("Join an active PermaPack run before using this command.")); return 0;
         }
-        int dropped = bag.dropHeld(player, wholeStack);
-        if (dropped == 0) source.sendFailure(Component.literal("Hold an item in your main hand to drop it."));
+        int dropped = bag.dropHeld(player, true);
+        if (dropped == 0) source.sendFailure(Component.literal("Select an item stack or a reserved hotbar slot to clear."));
         return dropped;
     }
 }

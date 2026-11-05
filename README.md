@@ -3,7 +3,7 @@
 A Fabric Minecraft challenge for up to three players: **one shared inventory,
 36 permanent item allocations, and freely movable stacks.**
 
-Current prototype: **0.1.3**, for **Minecraft 26.2**, **Fabric Loader 0.20.1**,
+Current prototype: **0.1.4**, for **Minecraft 26.2**, **Fabric Loader 0.20.1**,
 **Fabric API 0.161.0+26.2**, and **Java 25**.
 
 ## How it plays
@@ -18,10 +18,16 @@ Current prototype: **0.1.3**, for **Minecraft 26.2**, **Fabric Loader 0.20.1**,
 - Splitting into extra stored stacks can claim extra allocations. Merging them
   does not refund allocations. Empty reservations can refill with their own
   item type; their visible markers move aside when you rearrange other items.
-- Armor and offhands are personal, but their item types still claim reservations.
+- Each player has their own armor and offhand. Equipped items cost **zero**
+  shared allocations. Moving a whole bag stack into personal equipment frees
+  its allocation; moving equipment back into the bag needs capacity again.
+- Empty, water and lava buckets share one interchangeable allocation family.
+  Filling or emptying one bucket adds no allocation. Separate occupied bucket
+  stacks still need separate allocations.
 - Ordinary dropping is silently blocked. Hosts/operators can explicitly drop
-  one held item with `/pp drop`, or the held stack with `/pp drop stack`.
-  Dropping preserves the item's permanent allocation.
+  the whole selected stack with `/pp drop` or `/pp drop stack`. Both commands
+  also free that stack's allocation. Selecting an empty reservation marker and
+  running either command clears that reservation too.
 - Depositing into storage is blocked. Looting, crafting
   and workstation use are allowed. Bundles and filled portable storage are blocked.
 - The default death rule keeps shared items and permanent reservations.
@@ -36,10 +42,11 @@ their own publishers. They are not bundled in this source repository.
 
 1. Create a fresh Survival world with commands enabled.
 2. Invite the other players through Essential, or connect to the same server.
-3. Start with empty inventories, armor, offhands and crafting grids.
+3. Start with empty bags/hotbars and crafting grids. Personal armor and offhands
+   can stay equipped.
 4. The host runs `/permapack start`.
 
-Starting alone also works. Empty-inventory Survival players can automatically
+Starting alone also works. Empty-bag Survival players can automatically
 join until the team has three members. World saves preserve membership,
 shared items and reservations across restarts.
 
@@ -50,12 +57,12 @@ permissions. Status and slot inspection are available to players.
 
 | Command | Effect |
 | --- | --- |
-| `/permapack start` | Start with 1-3 online players who have empty inventories. |
+| `/permapack start` | Start with 1-3 online players who have empty bags; personal gear is allowed. |
 | `/permapack status` | Inspect claimed slots, settings and protected returns. |
 | `/permapack slots` | List each reservation and its item ID. |
-| `/permapack join PlayerName` | Add an empty-inventory player, maximum three. |
-| `/permapack drop` | Drop one item from your selected main-hand stack; keep its allocation. |
-| `/permapack drop stack` | Drop the entire selected main-hand stack; keep its allocation. |
+| `/permapack join PlayerName` | Add an empty-bag player, maximum three; personal gear is allowed. |
+| `/permapack drop` | Drop the selected whole stack and free its allocation, or clear a selected empty reservation. |
+| `/permapack drop stack` | Same whole-stack correction as `/permapack drop`. |
 | `/permapack death keep` | Keep shared items and reservations on death, the default. |
 | `/permapack death lose` | A death wipes shared items and online players' equipment; reservations remain. |
 | `/permapack stop` | End the run and return one copy of the shared inventory to the host. |
@@ -66,6 +73,15 @@ Crafting and closing leftovers have a protected return queue if space is
 temporarily unavailable. Check `/permapack status` and use items to make room.
 Stop refuses while protected returns cannot fit.
 
+## Updating an existing run
+
+Replace the previous PermaPack JAR with 0.1.4 and restart Minecraft. Open the
+existing world normally; no reset is needed. Old bucket-state claims merge,
+without discarding actual bucket stacks. Old armor and nonstackable offhand
+reservations are corrected once as each team member reconnects.
+Historical reservations for stackable offhand items are retained conservatively;
+select an unwanted empty marker and use `/pp drop` to clear it.
+
 ## Build and verify
 
 Use a JDK 25 and the included Gradle wrapper. On Windows:
@@ -75,23 +91,27 @@ Use a JDK 25 and the included Gradle wrapper. On Windows:
 ```
 
 On other systems, use `./gradlew test runGameTest build`. Output is
-`build/libs/permapack-0.1.3.jar`. The test mod is a separate source set and is
+`build/libs/permapack-0.1.4.jar`. The test mod is a separate source set and is
 not shipped in the production JAR.
 
-The suite has 13 unit tests and six required Minecraft GameTests. It covers
+The suite has 17 unit tests and nine required Minecraft GameTests. It covers
 three connected server players, real click packets, free positioning at the
 full allocation limit, ordinary swaps, split/merge budgets, left/right drags,
 pickups while another player holds a stack, concurrent gestures, crafting,
 drops and storage, loot, item conversions, persistence, reconnect,
 death/respawn and safe stop. Drop checks verify that ordinary attempts send no
 overlay, command permission is enforced, real drops preserve quantities and
-components, and another player can pick them up without spending a new claim.
+components, and correction commands free capacity for a different item type.
+Equipment checks cover three complete armor sets and shields, partial transfers,
+full-budget F/number-key/right-click swaps, safe cursor returns, unrelated
+historic claims, bucket conversions and legacy-save migration.
 See [BUILD-VERIFICATION.md](BUILD-VERIFICATION.md).
 
 ## Prototype limits
 
-Live Prism checks covered version 0.1.2 with Essential, Flashback and fullbright.
-The 0.1.3 drop update is covered by server packet and item-entity tests.
+Live Prism checks covered version 0.1.4 with Essential, Flashback and fullbright,
+including loading an existing world and equipping a shield and helmet without
+leaving shared claims. Server packet and item-entity tests cover the other rules.
 The existing save format and permanent allocation counts are retained.
 A three-human Essential session and long Survival runs
 still need group testing. Every workstation, conversion and extra-mod

@@ -90,6 +90,175 @@ public final class PermaPackGameTests {
         recipient.getInventory().clearContent(); bag.keepOnDeath=true;
     }
 
+    private static void offhandPacket(ServerPlayer player) {
+        for(int n=0;n<1200&&!player.connection.hasClientLoaded();n++)player.connection.tickClientLoadTimeout();
+        player.connection.handlePlayerAction(new net.minecraft.network.protocol.game.ServerboundPlayerActionPacket(
+            net.minecraft.network.protocol.game.ServerboundPlayerActionPacket.Action.SWAP_ITEM_WITH_OFFHAND,BlockPos.ZERO,net.minecraft.core.Direction.DOWN));
+    }
+
+    @GameTest(maxTicks=200)
+    public void personalEquipmentAndAtomicSwaps(GameTestHelper h) {
+        var server=h.getLevel().getServer();var bag=PermaPack.get(server);
+        var a=player(h,"GearA");var b=player(h,"GearB");var c=player(h,"GearC");
+        var slots=new net.minecraft.world.entity.EquipmentSlot[]{net.minecraft.world.entity.EquipmentSlot.HEAD,net.minecraft.world.entity.EquipmentSlot.CHEST,net.minecraft.world.entity.EquipmentSlot.LEGS,net.minecraft.world.entity.EquipmentSlot.FEET,net.minecraft.world.entity.EquipmentSlot.OFFHAND};
+        var gear=new net.minecraft.world.item.Item[]{Items.IRON_HELMET,Items.IRON_CHESTPLATE,Items.IRON_LEGGINGS,Items.IRON_BOOTS,Items.SHIELD};
+        try {
+            fresh(bag,a);check(h,bag.start(List.of(a,b,c)),"Start three-player equipment fixture");
+            for(ServerPlayer p:List.of(a,b,c))for(int n=0;n<gear.length;n++) {
+                ItemStack piece=new ItemStack(gear[n]);piece.set(net.minecraft.core.component.DataComponents.CUSTOM_NAME,net.minecraft.network.chat.Component.literal(p.getScoreboardName()+" gear"));
+                p.getInventory().add(piece);
+                packetClick(p,bagSlot(p.containerMenu,p,itemSlot(bag,gear[n])),0,ContainerInput.QUICK_MOVE);
+                check(h,p.getItemBySlot(slots[n]).is(gear[n])&&bag.ledger.count()==0,"Each equipped armor piece and shield refunds only its own bag allocation: "+slots[n]+", count="+bag.ledger.count());
+            }
+            a.getItemBySlot(slots[0]).setDamageValue(7);
+            check(h,b.getItemBySlot(slots[0]).getDamageValue()==0&&c.getItemBySlot(slots[0]).getDamageValue()==0,"All three complete armor sets and shields are personal");
+            check(h,bag.stop(a)&&bag.start(List.of(a,b))&&bag.joinTeam(List.of(c))&&bag.ledger.count()==0,"Players can start and join with their existing personal armor and offhands");
+            fillBudget(bag,36,Set.of(Items.SHIELD,Items.IRON_HELMET,Items.IRON_CHESTPLATE,Items.IRON_LEGGINGS,Items.IRON_BOOTS,Items.DIRT));
+            packetClick(a,bagSlot(a.containerMenu,a,40),0,ContainerInput.PICKUP);
+            check(h,a.containerMenu.getCarried().is(Items.SHIELD)&&bag.ledger.count()==36,"Personal equipment can be picked onto the cursor at full budget");
+            packetClick(a,bagSlot(a.containerMenu,a,0),0,ContainerInput.PICKUP);
+            check(h,a.containerMenu.getCarried().is(Items.SHIELD)&&bag.ledger.count()==36&&count(bag,Items.SHIELD)==0,"Returning a personal shield to a full bag is refused without loss");
+            a.inventoryMenu.removed(a);
+            check(h,a.getOffhandItem().is(Items.SHIELD)&&a.containerMenu.getCarried().isEmpty()&&bag.returns.isEmpty()&&bag.ledger.count()==36,"Closing a full bag safely restores a personal-origin cursor to its offhand");
+            a.setItemSlot(net.minecraft.world.entity.EquipmentSlot.OFFHAND,new ItemStack(Items.DIRT,64));
+            packetClick(a,bagSlot(a.containerMenu,a,40),1,ContainerInput.PICKUP);a.inventoryMenu.removed(a);
+            check(h,a.getOffhandItem().getCount()==64&&bag.returns.isEmpty()&&bag.ledger.count()==36,"Closing a partial personal cursor merges it back into its compatible offhand stack");
+
+            bag.reset();a.getInventory().add(new ItemStack(Items.DIRT,3));
+            a.setItemSlot(net.minecraft.world.entity.EquipmentSlot.OFFHAND,new ItemStack(Items.SHIELD));
+            fillBudget(bag,36,Set.of(Items.SHIELD));a.getInventory().setSelectedSlot(0);
+            offhandPacket(a);
+            check(h,a.getOffhandItem().is(Items.DIRT)&&bag.items.get(0).is(Items.SHIELD)&&bag.ledger.count()==36&&!bag.ledger.contains("minecraft:dirt"),"Native F packet atomically swaps equipment at full budget");
+            offhandPacket(a);
+            check(h,a.getOffhandItem().is(Items.SHIELD)&&bag.items.get(0).getCount()==3&&bag.items.get(0).is(Items.DIRT)&&bag.ledger.count()==36,"Reverse F swap preserves all quantities");
+            packetClick(a,bagSlot(a.containerMenu,a,1),40,ContainerInput.SWAP);
+            check(h,a.getOffhandItem().is(Items.SHIELD)&&count(bag,Items.SHIELD)==0&&bag.ledger.count()==36,"F over an empty reserved cell cannot introduce a new shared type at full budget");
+
+            bag.reset();a.getInventory().add(new ItemStack(Items.GOLDEN_HELMET));a.getInventory().setSelectedSlot(0);
+            a.setItemSlot(net.minecraft.world.entity.EquipmentSlot.HEAD,new ItemStack(Items.IRON_HELMET));
+            fillBudget(bag,36,Set.of(Items.IRON_HELMET));
+            packetClick(a,bagSlot(a.containerMenu,a,39),0,ContainerInput.SWAP);
+            check(h,a.getItemBySlot(net.minecraft.world.entity.EquipmentSlot.HEAD).is(Items.GOLDEN_HELMET)&&bag.items.get(0).is(Items.IRON_HELMET)&&bag.ledger.count()==36,"Armor number-key swap is atomic at full budget");
+            a.gameMode.useItem(a,h.getLevel(),a.getMainHandItem(),InteractionHand.MAIN_HAND);
+            check(h,a.getItemBySlot(net.minecraft.world.entity.EquipmentSlot.HEAD).is(Items.IRON_HELMET)&&bag.items.get(0).is(Items.GOLDEN_HELMET)&&bag.ledger.count()==36&&bag.returns.isEmpty(),"Right-click armor swapping conserves both pieces at full budget");
+            bag.reset();check(h,bag.stop(a),"Clean equipment fixture");
+            System.out.println("PERMAPACK_EQUIPMENT_PASS: three personal sets and shields, full-budget cursor/close, native F, armor number keys and right-click swaps");h.succeed();
+        } finally {if(bag.active){bag.reset();bag.stop(a);}for(ServerPlayer p:List.of(a,b,c)){if(bag.member(p))bag.disconnect(p);server.getPlayerList().remove(p);}}
+    }
+
+    @GameTest(maxTicks=200)
+    public void equipmentTransfersPreserveUnrelatedHistory(GameTestHelper h) {
+        var server=h.getLevel().getServer();var bag=PermaPack.get(server);
+        var a=player(h,"OriginA");var b=player(h,"OriginB");var c=player(h,"OriginC");
+        try {
+            fresh(bag,a);check(h,bag.start(List.of(a,b,c)),"Start allocation-origin fixture");
+            a.getInventory().add(new ItemStack(Items.DIRT,64));bag.ledger.claim(bag.ledger.freeSlot(),"minecraft:dirt");bag.normalize();
+            for(int n=0;n<3;n++) {
+                packetClick(a,bagSlot(a.containerMenu,a,0),1,ContainerInput.PICKUP);
+                packetClick(a,bagSlot(a.containerMenu,a,40),0,ContainerInput.PICKUP);
+                check(h,bag.ledger.count()==2&&a.getOffhandItem().getCount()==32&&bag.items.get(0).getCount()==32,"A partial offhand transfer cannot refund an unrelated historic allocation");
+                packetClick(a,bagSlot(a.containerMenu,a,40),0,ContainerInput.PICKUP);
+                packetClick(a,bagSlot(a.containerMenu,a,0),0,ContainerInput.PICKUP);
+                check(h,bag.ledger.count()==2&&bag.items.get(0).getCount()==64,"Repeating a partial offhand cycle preserves history");
+            }
+            packetClick(a,bagSlot(a.containerMenu,a,0),0,ContainerInput.PICKUP);
+            packetClick(a,bagSlot(a.containerMenu,a,40),0,ContainerInput.PICKUP);
+            check(h,bag.ledger.count()==1&&a.getOffhandItem().getCount()==64,"A whole stack refunds its own allocation while retaining the historic one");
+
+            bag.reset();a.getInventory().add(new ItemStack(Items.DIRT,64));bag.ledger.claim(bag.ledger.freeSlot(),"minecraft:dirt");bag.normalize();
+            packetClick(a,bagSlot(a.containerMenu,a,0),1,ContainerInput.PICKUP);
+            packetClick(b,bagSlot(b.containerMenu,b,0),0,ContainerInput.PICKUP);
+            packetClick(a,bagSlot(a.containerMenu,a,0),0,ContainerInput.PICKUP);
+            packetClick(b,bagSlot(b.containerMenu,b,40),0,ContainerInput.PICKUP);
+            check(h,bag.ledger.count()==2&&bag.items.get(0).getCount()==32,"Interleaved partial grabs cannot refund the other player's surviving allocation");
+            packetClick(a,bagSlot(a.containerMenu,a,0),0,ContainerInput.PICKUP);
+            packetClick(a,bagSlot(a.containerMenu,a,40),0,ContainerInput.PICKUP);
+            check(h,bag.ledger.count()==1&&a.getOffhandItem().getCount()==32&&b.getOffhandItem().getCount()==32,"The last counted fragment moving into equipment refunds exactly its original allocation");
+
+            bag.reset();a.getInventory().add(new ItemStack(Items.DIRT,32));bag.ledger.claim(bag.ledger.freeSlot(),"minecraft:dirt");bag.normalize();
+            a.inventoryMenu.getSlot(1).setByPlayer(new ItemStack(Items.DIRT,32));
+            packetClick(a,1,0,ContainerInput.PICKUP);
+            packetClick(a,bagSlot(a.containerMenu,a,40),0,ContainerInput.PICKUP);
+            check(h,bag.ledger.count()==2&&bag.items.get(0).getCount()==32&&a.getOffhandItem().getCount()==32,"An external cursor that could merge into the bag cannot consume and refund a historic allocation");
+            bag.reset();a.getInventory().add(new ItemStack(Items.DIRT,32));
+            SimpleContainer retained=new SimpleContainer(1);retained.setItem(0,bag.items.get(0));bag.items.set(0,ItemStack.EMPTY);bag.normalize();
+            bag.reset();a.getInventory().add(new ItemStack(Items.DIRT,32));bag.ledger.claim(bag.ledger.freeSlot(),"minecraft:dirt");bag.normalize();
+            a.inventoryMenu.getSlot(1).setByPlayer(retained.removeItemNoUpdate(0));packetClick(a,1,0,ContainerInput.PICKUP);
+            packetClick(a,bagSlot(a.containerMenu,a,40),0,ContainerInput.PICKUP);
+            check(h,bag.ledger.count()==2,"A stack retained across reset cannot refund a new run's historic reservation");
+
+            bag.reset();a.getInventory().add(new ItemStack(Items.DIRT,32));a.setItemSlot(net.minecraft.world.entity.EquipmentSlot.OFFHAND,new ItemStack(Items.DIRT,32));
+            packetClick(a,bagSlot(a.containerMenu,a,0),0,ContainerInput.PICKUP);packetClick(a,bagSlot(a.containerMenu,a,40),0,ContainerInput.PICKUP);
+            check(h,bag.ledger.count()==0&&a.getOffhandItem().getCount()==64,"Merging a whole paid cursor into a personal offhand releases its allocation");
+            bag.reset();a.getInventory().add(new ItemStack(Items.DIRT,32));a.setItemSlot(net.minecraft.world.entity.EquipmentSlot.OFFHAND,new ItemStack(Items.DIRT,32));
+            packetClick(a,bagSlot(a.containerMenu,a,0),0,ContainerInput.PICKUP);packetDrag(a,0,bagSlot(a.containerMenu,a,40));
+            check(h,bag.ledger.count()==0&&a.getOffhandItem().getCount()==64,"Drag-merging into a personal offhand also releases its allocation");
+            for(boolean closeFirst:List.of(false,true)) {
+                bag.reset();a.getInventory().add(new ItemStack(Items.COAL,64));
+                SimpleContainer furnace=new SimpleContainer(3);
+                a.containerMenu=new FurnaceMenu(111,a.getInventory(),furnace,new SimpleContainerData(4));
+                packetClick(a,bagSlot(a.containerMenu,a,0),1,ContainerInput.PICKUP);packetClick(a,1,0,ContainerInput.PICKUP);
+                if(closeFirst){a.containerMenu.removed(a);a.containerMenu=a.inventoryMenu;}
+                packetClick(a,bagSlot(a.containerMenu,a,0),40,ContainerInput.SWAP);
+                check(h,furnace.getItem(1).getCount()==32&&a.getOffhandItem().getCount()==32&&bag.ledger.count()==1,"A live processing fragment retains its allocation whether its screen is open or closed");
+                if(a.containerMenu!=a.inventoryMenu){a.containerMenu.removed(a);a.containerMenu=a.inventoryMenu;}
+            }
+            bag.reset();check(h,bag.stop(a),"Clean origin fixture");
+            System.out.println("PERMAPACK_ORIGINS_PASS: partial cycles, interleaved grabs, whole-stack refunds and unrelated historic claims");h.succeed();
+        } finally {if(bag.active){bag.reset();bag.stop(a);}for(ServerPlayer p:List.of(a,b,c)){if(bag.member(p))bag.disconnect(p);server.getPlayerList().remove(p);}}
+    }
+
+    @GameTest(maxTicks=200)
+    public void bucketFamiliesAndLegacyEquipmentMigration(GameTestHelper h) {
+        var server=h.getLevel().getServer();var bag=PermaPack.get(server);var a=player(h,"LegacyA");var b=player(h,"LegacyB");var c=player(h,"LegacyC");
+        SharedBag restored=null;
+        try {
+            fresh(bag,a);check(h,bag.start(List.of(a,b,c)),"Start bucket fixture");
+            a.getInventory().add(new ItemStack(Items.BUCKET));a.getInventory().setSelectedSlot(0);
+            fillBudget(bag,36,Set.of(Items.WATER_BUCKET,Items.LAVA_BUCKET,Items.MILK_BUCKET));
+            for(var state:List.of(Items.WATER_BUCKET,Items.BUCKET,Items.LAVA_BUCKET,Items.BUCKET)) {
+                ItemStack replacement=net.minecraft.world.item.ItemUtils.createFilledResult(a.getMainHandItem(),a,new ItemStack(state));
+                a.setItemInHand(InteractionHand.MAIN_HAND,replacement);
+                check(h,a.getMainHandItem().is(state)&&bag.ledger.count()==36&&bag.ledger.reserved("minecraft:bucket")==1,"Every bucket state reuses one allocation at full capacity");
+            }
+            bag.reset();a.getInventory().add(new ItemStack(Items.BUCKET,2));a.getInventory().setSelectedSlot(0);
+            fillBudget(bag,36,Set.of(Items.WATER_BUCKET,Items.LAVA_BUCKET,Items.MILK_BUCKET));
+            ItemStack before=a.getMainHandItem();
+            ItemStack refused=net.minecraft.world.item.ItemUtils.createFilledResult(before,a,new ItemStack(Items.WATER_BUCKET));
+            check(h,refused==before&&before.getCount()==2&&count(bag,Items.WATER_BUCKET)==0&&bag.ledger.count()==36,"Splitting two stacked empties into empty and full bucket requires a second physical allocation");
+            bag.reset();a.getInventory().add(new ItemStack(Items.WATER_BUCKET));a.getInventory().add(new ItemStack(Items.LAVA_BUCKET));
+            check(h,bag.ledger.count()==2&&bag.ledger.reserved("minecraft:bucket")==2,"Two occupied bucket stacks still use two allocations");
+            var ops=RegistryOps.create(NbtOps.INSTANCE,h.getLevel().registryAccess());
+            var tag=(net.minecraft.nbt.CompoundTag)SharedBag.CODEC.encodeStart(ops,bag).getOrThrow();
+            tag.remove("rules_version");tag.remove("equipment_migration");
+            var legacy=new net.minecraft.nbt.ListTag();
+            for(int n=0;n<36;n++)legacy.add(net.minecraft.nbt.StringTag.valueOf(n==0?"minecraft:water_bucket":n==1?"minecraft:lava_bucket":n==2?"minecraft:bucket":n==3?"minecraft:shield":n==4?"minecraft:iron_helmet":""));
+            tag.put("reservations",legacy);
+            bag.reset();check(h,bag.stop(a),"Stop active state before direct migration fixture");
+            for(ServerPlayer p:List.of(a,b,c)){p.setItemSlot(net.minecraft.world.entity.EquipmentSlot.OFFHAND,new ItemStack(Items.SHIELD));p.setItemSlot(net.minecraft.world.entity.EquipmentSlot.HEAD,new ItemStack(Items.IRON_HELMET));}
+            restored=SharedBag.CODEC.parse(ops,tag).getOrThrow();
+            for(ServerPlayer p:List.of(a,b,c))restored.join(p);
+            check(h,restored.ledger.count()==2&&restored.ledger.reserved("minecraft:bucket")==2&&!restored.ledger.contains("minecraft:shield")&&!restored.ledger.contains("minecraft:iron_helmet"),"Old state variants collapse but real buckets survive, and equipped armor/shield claims are removed");
+            restored.disconnect(a);restored.join(a);
+            check(h,restored.ledger.count()==2,"Equipment migration is not repeated on reconnect");
+            var roundTrip=SharedBag.CODEC.parse(ops,SharedBag.CODEC.encodeStart(ops,restored).getOrThrow()).getOrThrow();roundTrip.normalize();
+            check(h,roundTrip.ledger.count()==2&&ItemStack.listMatches(roundTrip.items,restored.items),"Migrated state persists with quantities intact");
+            restored.reset();restored.stop(a);restored=null;
+            var offhandTag=tag.copy();var onlyBucket=new net.minecraft.nbt.ListTag();
+            for(int n=0;n<36;n++)onlyBucket.add(net.minecraft.nbt.StringTag.valueOf(n==0?"minecraft:bucket":n==1?"minecraft:water_bucket":n==2?"minecraft:lava_bucket":""));
+            offhandTag.put("reservations",onlyBucket);
+            var emptyItems=new net.minecraft.nbt.ListTag();for(int n=0;n<36;n++)emptyItems.add(new net.minecraft.nbt.CompoundTag());offhandTag.put("items",emptyItems);
+            a.setItemSlot(net.minecraft.world.entity.EquipmentSlot.OFFHAND,new ItemStack(Items.WATER_BUCKET));
+            restored=SharedBag.CODEC.parse(ops,offhandTag).getOrThrow();restored.join(a);
+            check(h,restored.ledger.count()==0&&a.getOffhandItem().is(Items.WATER_BUCKET),"A legacy offhand water bucket leaves no shared bucket reservation");
+            System.out.println("PERMAPACK_FAMILY_MIGRATION_PASS: full-budget bucket cycles, physical stack limits, old equipment cleanup and codec/reconnect idempotence");h.succeed();
+        } finally {
+            if(restored!=null&&restored.active){restored.reset();restored.stop(a);}
+            if(bag.active){bag.reset();bag.stop(a);}
+            for(ServerPlayer p:List.of(a,b,c)){if(bag.member(p))bag.disconnect(p);server.getPlayerList().remove(p);}
+        }
+    }
+
     @GameTest(maxTicks = 200)
     public void silentBlockingAndManualDropCommands(GameTestHelper h) throws Exception {
         var server = h.getLevel().getServer(); SharedBag bag = PermaPack.get(server);
@@ -122,21 +291,26 @@ public final class PermaPackGameTests {
             try { server.getCommands().getDispatcher().execute("pp drop",guest); }
             catch(com.mojang.brigadier.exceptions.CommandSyntaxException expectedFailure) { denied = true; }
             check(h,denied && count(bag,Items.DIRT)==5,"A non-operator cannot use the manual-drop exception");
-            check(h,server.getCommands().getDispatcher().execute("pp drop",host)==1,"Short command drops exactly one item");
-            check(h,count(bag,Items.DIRT)==4 && b.getInventory().getItem(0).getCount()==4 && c.getInventory().getItem(0).getCount()==4 && bag.ledger.count()==1,"All three players see the deduction without releasing an allocation");
-            check(h,server.getCommands().getDispatcher().execute("permapack drop stack",host)==4,"Long command drops the remaining stack");
+            check(h,server.getCommands().getDispatcher().execute("pp drop",host)==5,"Short command clears the entire selected stack");
+            check(h,count(bag,Items.DIRT)==0 && b.getInventory().getItem(0).isEmpty() && c.getInventory().getItem(0).isEmpty() && bag.ledger.count()==0,"All three players see an empty unclaimed slot");
             var drops = h.getLevel().getEntitiesOfClass(net.minecraft.world.entity.item.ItemEntity.class,area,fixture);
             check(h,drops.stream().mapToInt(e->e.getItem().getCount()).sum()==5 && drops.stream().allMatch(e->ItemStack.isSameItemSameComponents(expected,e.getItem())),"Real dropped entities preserve exact counts and item components");
-            check(h,count(bag,Items.DIRT)==0 && SharedBag.ghost(bag.items.get(0)) && bag.ledger.count()==1 && bag.returns.isEmpty(),"Dropping the final stack leaves its permanent reservation");
-            check(h,server.getCommands().getDispatcher().execute("pp drop",host)==0,"Reservation markers cannot be dropped");
-            var one = drops.stream().filter(e->e.getItem().getCount()==1).findFirst().orElseThrow();
+            ItemStack more=expected.copyWithCount(4);a.getInventory().add(more);
+            check(h,server.getCommands().getDispatcher().execute("permapack drop stack",host)==4 && bag.ledger.count()==0,"Long command also clears the stack and its allocation");
+            a.getInventory().add(new ItemStack(Items.DIRT));a.getInventory().removeItem(0,1);bag.normalize();
+            check(h,SharedBag.ghost(bag.items.get(0)) && server.getCommands().getDispatcher().execute("pp drop",host)==1 && bag.ledger.count()==0,"Correction command also clears an empty reservation marker");
+            var one = drops.getFirst();
             one.setNoPickUpDelay(); one.playerTouch(b);
-            check(h,count(bag,Items.DIRT)==1 && c.getInventory().getItem(0).getCount()==1 && bag.ledger.count()==1,"A friend can pick up the dropped item into the existing shared allocation");
+            check(h,count(bag,Items.DIRT)==5 && c.getInventory().getItem(0).getCount()==5 && bag.ledger.count()==1,"A friend picking the item up claims an allocation again");
             a.drop(false);
-            check(h,count(bag,Items.DIRT)==1 && !bag.permitsCommandDrop(expected),"The exception ends immediately after the command");
+            check(h,count(bag,Items.DIRT)==5 && !bag.permitsCommandDrop(expected),"The exception ends immediately after the command");
+            fillBudget(bag,36,Set.of(Items.NETHER_STAR));
+            check(h,server.getCommands().getDispatcher().execute("pp drop",host)==5&&bag.ledger.count()==35,"Correction command frees one allocation from a full budget");
+            ItemStack star=new ItemStack(Items.NETHER_STAR);
+            check(h,b.getInventory().add(star)&&star.isEmpty()&&bag.ledger.count()==36,"The freed allocation immediately accepts a different item type");
             bag.reset(); check(h,bag.stop(a),"Stop manual-drop fixture");
             check(h,server.getCommands().getDispatcher().execute("pp drop",host)==0,"The command requires an active team");
-            System.out.println("PERMAPACK_DROP_PASS: silent Q/menu/outside blocking, operator permission, exact single/stack entities, components, shared deduction, permanent claims, pickup and scoped exception");
+            System.out.println("PERMAPACK_DROP_PASS: silent blocking, operator permission, whole-stack aliases, exact entities, marker cleanup, slot release, new-type pickup and scoped exception");
             h.succeed();
         } finally {
             for(var entity:h.getLevel().getEntitiesOfClass(net.minecraft.world.entity.item.ItemEntity.class,area,fixture)) entity.discard();
@@ -284,15 +458,15 @@ public final class PermaPackGameTests {
             h.getLevel().setBlockAndUpdate(source,Blocks.WATER.defaultBlockState());
             a.gameMode.useItem(a,h.getLevel(),a.getMainHandItem(),InteractionHand.MAIN_HAND);
             check(h,count(bag,Items.WATER_BUCKET)==1 && h.getLevel().getFluidState(source).isEmpty(),"Actual bucket use collects water into the shared bag");
-            check(h,bag.ledger.count()==2 && bag.ledger.contains("minecraft:bucket"),"Bucket conversion keeps both permanent reservations");
+            check(h,bag.ledger.count()==1 && bag.ledger.contains("minecraft:bucket"),"Bucket conversion retains one shared bucket allocation");
             check(h,b.getInventory().getNonEquipmentItems()==bag.items && bag.returns.isEmpty(),"Conversion neither duplicates nor queues its output");
             a.getInventory().add(new ItemStack(Items.BUCKET)); a.getInventory().setSelectedSlot(itemSlot(bag,Items.BUCKET));
             fillBudget(bag,36,Set.of(Items.LAVA_BUCKET,Items.NETHER_STAR));
             h.getLevel().setBlockAndUpdate(source,Blocks.LAVA.defaultBlockState());
-            var denied=ConversionGuard.use(a,a.getMainHandItem(),null,null);
-            check(h,denied==InteractionResult.FAIL,"New lava-bucket type is rejected before use at full budget: held="+a.getMainHandItem()+", claimed="+bag.ledger.count()+", ray="+h.getLevel().clip(new net.minecraft.world.level.ClipContext(a.getEyePosition(),a.getEyePosition().add(a.getViewVector(1f).scale(a.blockInteractionRange())),net.minecraft.world.level.ClipContext.Block.OUTLINE,net.minecraft.world.level.ClipContext.Fluid.SOURCE_ONLY,a)).getBlockPos()+", source="+source);
+            var allowed=ConversionGuard.use(a,a.getMainHandItem(),null,null);
+            check(h,allowed==InteractionResult.PASS,"An existing bucket can change state at full capacity");
             a.gameMode.useItem(a,h.getLevel(),a.getMainHandItem(),InteractionHand.MAIN_HAND);
-            check(h,h.getLevel().getBlockState(source).is(Blocks.LAVA) && count(bag,Items.LAVA_BUCKET)==0 && count(bag,Items.BUCKET)==1,"Server interaction leaves lava and bucket intact when rejected");
+            check(h,h.getLevel().getFluidState(source).isEmpty() && count(bag,Items.LAVA_BUCKET)==1 && count(bag,Items.BUCKET)==0 && bag.ledger.count()==36,"Real lava pickup reuses the empty bucket allocation at full budget");
             check(h,ConversionGuard.use(a,a.getMainHandItem(),source.below(),null)==InteractionResult.PASS,"An unrelated block interaction is not blocked by a held consumable");
             bag.reset();
             a.getInventory().add(new ItemStack(Items.DIAMOND,2));
@@ -304,7 +478,7 @@ public final class PermaPackGameTests {
             bag.retireMirror(b);
             check(h,b.getInventory().isEmpty(),"Retired mirrors are discarded even when a later run is active");
             bag.reset(); check(h,bag.stop(a),"Clean conversion fixture");
-            System.out.println("PERMAPACK_CONVERSIONS_PASS: real water pickup, full-budget lava refusal, team limit, retired reconnect");
+            System.out.println("PERMAPACK_CONVERSIONS_PASS: real water and full-budget lava pickup, bucket family, team limit, retired reconnect");
             h.succeed();
         } finally {
             if (bag.active) { bag.reset(); bag.stop(a); }

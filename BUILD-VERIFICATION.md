@@ -1,47 +1,46 @@
 # Build verification
 
-Version 0.1.3 checked on 2026-11-04 with JDK 25 on Windows x64.
+Version 0.1.4 checked on 2026-11-05 with JDK 25 on Windows x64.
 
 ```text
 gradlew.bat --no-daemon test runGameTest build
 ```
 
 - Production build passed.
-- All 13 unit tests passed, with no failures, errors or skipped tests.
-- All six required Minecraft server GameTests passed: five custom gameplay
+- All 17 unit tests passed with no failures, errors or skipped tests.
+- All nine required Minecraft server GameTests passed: eight custom gameplay
   scenarios and Fabric's registration test.
-- The new movement scenario uses three connected server players and real
-  container-click packets. It checks ordinary moves/swaps, full-budget moves,
-  split/merge accounting, left/right drag distribution, shift transfers,
-  cursor/pickup capacity, simultaneous gestures, storage protection and
-  save-codec round-trip without changing the save format.
-- Existing crafting, recipe remainders, conversions, reconnect, team limits,
-  death/respawn and safe-stop scenarios still pass.
-- The new drop scenario uses three connected server players. It records
-  outgoing packets to verify Q, Ctrl+Q, inventory throws and outside clicks
-  send no action-bar or overlay-chat warning. Ordinary drops remain blocked.
-- The command dispatcher enforces operator permission. Both command names
-  drop the correct single-item or whole-stack quantity as real item entities,
-  preserve components, update the shared inventory and retain allocations.
-  Another player can pick up an item into its original allocation. Empty
-  reservation markers and inactive challenges cannot use the command.
-- The drop exception ends immediately after the command; Q is still blocked.
+- Equipment tests use three connected server players, each with their own full
+  armor set and shield, with zero shared allocations. They cover personal gear
+  at start/join, normal clicks, partial stacks, safe cursor returns, and atomic
+  F/number-key/right-click swaps at the full allocation limit.
+- Allocation-origin checks cover partial offhand cycling, interleaved players,
+  merging into occupied offhands, resets, external cursors and closed processing
+  screens, preserving unrelated historic reservations.
+- Empty/water/lava bucket state changes reuse one family even at 36/36.
+  Multiple occupied bucket stacks still require multiple allocations.
+- Legacy-save tests cover bucket migration, worn armor and nonstackable offhand
+  cleanup, reconnect idempotence, and save-codec round-trip.
+- Both drop aliases clear the whole selected stack and its one allocation.
+  Empty reservation markers can also be cleared. Tests verify exact real drops,
+  item components, operator permission, silent ordinary-drop blocking, and
+  immediate acceptance of a new item type into the freed allocation.
+- Existing three-player shared inventory, crafting/remainders, conversions,
+  split/merge limits, death/respawn, reconnect and safe-stop scenarios pass.
+- A read-only Codex reviewer using the inherited selected model checked the
+  transfer design and rechecked six raised findings after their fixes.
+- A full Prism client with Essential 1.5.1, Flashback 0.43.6 and Gamma Utils
+  3.1.3 loaded an existing disposable challenge world. Native Shift-clicks
+  equipped a shield and iron helmet, removed their bag reservations, and
+  retained the world's original four claims with zero protected returns.
+  The disposable world saved successfully and the test client was closed.
 
-Artifact: `permapack-0.1.3.jar`
+Artifact: `permapack-0.1.4.jar`
 
-SHA256: `4ed91116db57fc50d118563e515f3674ddf6ce647eb609535bff724a824ee1aa`
+SHA256: `a8050ae31781208921a5f120f97f1c0e73e05c5cc4707d6a9944a92453afaa25`
 
-Earlier 0.1.2 interactive checks used a disposable world in a Prism instance with Essential
-1.5.1, Flashback 0.43.6 and Gamma Utils 3.1.3. They confirmed that dirt moves out
-of hotbar slot 1, a sword can occupy that slot, a left drag distributes 64 dirt
-as three stacks of 21 plus one on the cursor, and closing returns that one
-exactly once. Merging restores 64 dirt without refunding the three dirt
-allocations. A sword can occupy the visible position of an empty dirt
-reservation; its marker moves aside. Status remains four allocations with
-zero protected returns. There is no HUD slot counter.
-Saving and reloading preserved that layout, the 64 dirt, the sword and both
-empty reservations. Loading the existing 0.1.1 world also retained its claims.
-
-A real three-human Essential session, long Survival runs and exhaustive
-workstation/extra-mod interactions remain open. Interactive Prism tests and
-Flashback replay playback were not repeated for the 0.1.3 drop update.
+Migration retains ambiguous historical reservations for stackable offhand
+items. Select an unwanted empty marker and run `/pp drop` to clear it.
+A fresh three-human Essential session, long Survival runs and exhaustive
+workstation/extra-mod interactions remain open. Flashback replay playback
+was not repeated for this update.
