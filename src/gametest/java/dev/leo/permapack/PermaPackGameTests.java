@@ -36,14 +36,23 @@ public final class PermaPackGameTests {
         bag.normalize();
     }
     private static ServerPlayer player(GameTestHelper h, String name) {
+        return player(h, name, new Connection(PacketFlow.SERVERBOUND));
+    }
+    private static ServerPlayer player(GameTestHelper h, String name, Connection connection) {
         var server = h.getLevel().getServer();
         var cookie = CommonListenerCookie.createInitial(new GameProfile(UUID.randomUUID(), name), false);
         var player = new ServerPlayer(server, h.getLevel(), cookie.gameProfile(), cookie.clientInformation());
-        var connection = new Connection(PacketFlow.SERVERBOUND);
         new EmbeddedChannel(connection);
         server.getPlayerList().placeNewPlayer(connection, player, cookie);
         player.setGameMode(GameType.SURVIVAL);
         return player;
+    }
+    private static final class ObservedConnection extends Connection {
+        final List<net.minecraft.network.protocol.Packet<?>> sent = new ArrayList<>();
+        ObservedConnection() { super(PacketFlow.SERVERBOUND); }
+        @Override public void send(net.minecraft.network.protocol.Packet<?> packet, io.netty.channel.ChannelFutureListener listener, boolean flush) {
+            sent.add(packet); super.send(packet, listener, flush);
+        }
     }
     private static int bagSlot(AbstractContainerMenu menu, ServerPlayer p, int slot) {
         return menu.findSlot(p.getInventory(), slot).orElseThrow();
@@ -79,6 +88,61 @@ public final class PermaPackGameTests {
     private static void fresh(SharedBag bag, ServerPlayer recipient) {
         bag.reset(); if (bag.active && !bag.stop(recipient)) throw new IllegalStateException("Test cleanup could not stop previous fixture");
         recipient.getInventory().clearContent(); bag.keepOnDeath=true;
+    }
+
+    @GameTest(maxTicks = 200)
+    public void silentBlockingAndManualDropCommands(GameTestHelper h) throws Exception {
+        var server = h.getLevel().getServer(); SharedBag bag = PermaPack.get(server);
+        var observed = new ObservedConnection();
+        var a = player(h, "DropHost", observed); var b = player(h, "DropFriendB"); var c = player(h, "DropFriendC");
+        var name = net.minecraft.network.chat.Component.literal("PermaPack manual drop fixture");
+        var origin = h.absolutePos(new BlockPos(1,2,1));
+        a.setPos(origin.getX()+0.5, origin.getY(), origin.getZ()+0.5);
+        b.setPos(a.position()); c.setPos(a.position());
+        var area = a.getBoundingBox().inflate(8);
+        java.util.function.Predicate<net.minecraft.world.entity.item.ItemEntity> fixture = e -> name.equals(e.getItem().get(net.minecraft.core.component.DataComponents.CUSTOM_NAME));
+        try {
+            fresh(bag,a); check(h,bag.start(List.of(a,b,c)),"Start manual-drop fixture");
+            ItemStack dirt = new ItemStack(Items.DIRT,5); dirt.set(net.minecraft.core.component.DataComponents.CUSTOM_NAME,name);
+            ItemStack expected = dirt.copy(); a.getInventory().add(dirt); a.getInventory().setSelectedSlot(0);
+            observed.sent.clear();
+            a.drop(false); a.drop(true);
+            packetClick(a,bagSlot(a.containerMenu,a,0),0,ContainerInput.THROW);
+            packetClick(a,bagSlot(a.containerMenu,a,0),1,ContainerInput.THROW);
+            packetClick(a,bagSlot(a.containerMenu,a,0),0,ContainerInput.PICKUP);
+            packetClick(a,-999,0,ContainerInput.PICKUP);
+            check(h,a.containerMenu.getCarried().getCount()==5,"Outside clicks preserve the entire held stack");
+            packetClick(a,bagSlot(a.containerMenu,a,0),0,ContainerInput.PICKUP);
+            check(h,count(bag,Items.DIRT)==5 && h.getLevel().getEntitiesOfClass(net.minecraft.world.entity.item.ItemEntity.class,area,fixture).isEmpty(),"Ordinary drops stay blocked without spawning items");
+            check(h,observed.sent.stream().noneMatch(p -> p instanceof net.minecraft.network.protocol.game.ClientboundSetActionBarTextPacket || p instanceof net.minecraft.network.protocol.game.ClientboundSystemChatPacket chat && chat.overlay()),"Blocked drop attempts send no on-screen warning");
+
+            var host = server.createCommandSourceStack().withEntity(a).withPermission(net.minecraft.server.permissions.PermissionSet.ALL_PERMISSIONS);
+            var guest = host.withPermission(net.minecraft.server.permissions.PermissionSet.NO_PERMISSIONS);
+            boolean denied = false;
+            try { server.getCommands().getDispatcher().execute("pp drop",guest); }
+            catch(com.mojang.brigadier.exceptions.CommandSyntaxException expectedFailure) { denied = true; }
+            check(h,denied && count(bag,Items.DIRT)==5,"A non-operator cannot use the manual-drop exception");
+            check(h,server.getCommands().getDispatcher().execute("pp drop",host)==1,"Short command drops exactly one item");
+            check(h,count(bag,Items.DIRT)==4 && b.getInventory().getItem(0).getCount()==4 && c.getInventory().getItem(0).getCount()==4 && bag.ledger.count()==1,"All three players see the deduction without releasing an allocation");
+            check(h,server.getCommands().getDispatcher().execute("permapack drop stack",host)==4,"Long command drops the remaining stack");
+            var drops = h.getLevel().getEntitiesOfClass(net.minecraft.world.entity.item.ItemEntity.class,area,fixture);
+            check(h,drops.stream().mapToInt(e->e.getItem().getCount()).sum()==5 && drops.stream().allMatch(e->ItemStack.isSameItemSameComponents(expected,e.getItem())),"Real dropped entities preserve exact counts and item components");
+            check(h,count(bag,Items.DIRT)==0 && SharedBag.ghost(bag.items.get(0)) && bag.ledger.count()==1 && bag.returns.isEmpty(),"Dropping the final stack leaves its permanent reservation");
+            check(h,server.getCommands().getDispatcher().execute("pp drop",host)==0,"Reservation markers cannot be dropped");
+            var one = drops.stream().filter(e->e.getItem().getCount()==1).findFirst().orElseThrow();
+            one.setNoPickUpDelay(); one.playerTouch(b);
+            check(h,count(bag,Items.DIRT)==1 && c.getInventory().getItem(0).getCount()==1 && bag.ledger.count()==1,"A friend can pick up the dropped item into the existing shared allocation");
+            a.drop(false);
+            check(h,count(bag,Items.DIRT)==1 && !bag.permitsCommandDrop(expected),"The exception ends immediately after the command");
+            bag.reset(); check(h,bag.stop(a),"Stop manual-drop fixture");
+            check(h,server.getCommands().getDispatcher().execute("pp drop",host)==0,"The command requires an active team");
+            System.out.println("PERMAPACK_DROP_PASS: silent Q/menu/outside blocking, operator permission, exact single/stack entities, components, shared deduction, permanent claims, pickup and scoped exception");
+            h.succeed();
+        } finally {
+            for(var entity:h.getLevel().getEntitiesOfClass(net.minecraft.world.entity.item.ItemEntity.class,area,fixture)) entity.discard();
+            if(bag.active){bag.reset();bag.stop(a);}
+            for(ServerPlayer p:List.of(a,b,c)){if(bag.member(p))bag.disconnect(p);server.getPlayerList().remove(p);}
+        }
     }
 
     @GameTest(maxTicks = 200)

@@ -10,6 +10,8 @@ import net.fabricmc.fabric.api.event.player.UseItemCallback;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 import net.fabricmc.fabric.api.event.player.UseEntityCallback;
 import net.minecraft.commands.Commands;
+import net.minecraft.commands.CommandSourceStack;
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.minecraft.commands.arguments.EntityArgument;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
@@ -84,6 +86,9 @@ public final class PermaPack implements ModInitializer {
                         }
                         return players.size();
                     })))
+                .then(Commands.literal("drop").requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
+                    .executes(ctx -> drop(ctx.getSource(), false))
+                    .then(Commands.literal("stack").executes(ctx -> drop(ctx.getSource(), true))))
                 .then(Commands.literal("death").requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
                     .then(Commands.literal("keep").executes(ctx -> { var b = get(ctx.getSource().getServer()); b.keepOnDeath = true; b.setDirty(); ctx.getSource().sendSuccess(() -> Component.literal("Team keeps items and reservations on death."), true); return 1; }))
                     .then(Commands.literal("lose").executes(ctx -> { var b = get(ctx.getSource().getServer()); b.keepOnDeath = false; b.setDirty(); ctx.getSource().sendSuccess(() -> Component.literal("A death empties the team's items. Reservations remain."), true); return 1; })))
@@ -100,4 +105,14 @@ public final class PermaPack implements ModInitializer {
         });
     }
 
+    private static int drop(CommandSourceStack source, boolean wholeStack) throws CommandSyntaxException {
+        ServerPlayer player = source.getPlayerOrException();
+        SharedBag bag = forPlayer(player);
+        if (bag == null) {
+            source.sendFailure(Component.literal("Join an active PermaPack run before using this command.")); return 0;
+        }
+        int dropped = bag.dropHeld(player, wholeStack);
+        if (dropped == 0) source.sendFailure(Component.literal("Hold an item in your main hand to drop it."));
+        return dropped;
+    }
 }

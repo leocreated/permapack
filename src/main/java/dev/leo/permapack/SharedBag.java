@@ -57,6 +57,7 @@ public final class SharedBag extends SavedData {
     public boolean keepOnDeath = true;
     private boolean returning;
     private boolean normalizing;
+    private ItemStack commandDrop;
     public boolean internal;
 
     public SharedBag() { ledger = new SlotLedger(); }
@@ -139,6 +140,26 @@ public final class SharedBag extends SavedData {
     public void tell(Player player, String message) {
         if (player instanceof ServerPlayer p && p.connection != null)
             p.sendOverlayMessage(Component.literal("PermaPack: " + message).withStyle(ChatFormatting.YELLOW));
+    }
+
+    /** Only the exact stack created by the operator's command can bypass drop recovery. */
+    public boolean permitsCommandDrop(ItemStack stack) { return stack == commandDrop; }
+    public int dropHeld(ServerPlayer player, boolean wholeStack) {
+        if (!member(player) || !bound(player.getInventory()) || !player.isAlive()) return 0;
+        ItemStack held = items.get(player.getInventory().getSelectedSlot());
+        if (!real(held)) return 0;
+        int amount = wholeStack ? held.getCount() : 1;
+        ItemStack dropped = held.split(amount);
+        boolean success = false;
+        commandDrop = dropped;
+        try {
+            success = player.drop(dropped, false, true) != null;
+            return success ? amount : 0;
+        } finally {
+            commandDrop = null;
+            if (!success) held.grow(amount);
+            normalize(); sync(); setDirty();
+        }
     }
 
     public void normalize() {
@@ -393,7 +414,7 @@ public final class SharedBag extends SavedData {
             resync(player); return true;
         }
         if (input == ContainerInput.THROW || input == ContainerInput.CLONE || index == -999) {
-            tell(player, "You can't drop items during this challenge."); resync(player); return true;
+            resync(player); return true;
         }
         // Number-key swaps are fully atomic, including both permanent reservations.
         if (input == ContainerInput.SWAP && bagSlot && button >= 0 && button < 9) {

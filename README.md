@@ -3,7 +3,7 @@
 A Fabric Minecraft challenge for up to three players: **one shared inventory,
 36 permanent item allocations, and freely movable stacks.**
 
-Current prototype: **0.1.2**, for **Minecraft 26.2**, **Fabric Loader 0.20.1**,
+Current prototype: **0.1.3**, for **Minecraft 26.2**, **Fabric Loader 0.20.1**,
 **Fabric API 0.161.0+26.2**, and **Java 25**.
 
 ## How it plays
@@ -19,7 +19,10 @@ Current prototype: **0.1.2**, for **Minecraft 26.2**, **Fabric Loader 0.20.1**,
   does not refund allocations. Empty reservations can refill with their own
   item type; their visible markers move aside when you rearrange other items.
 - Armor and offhands are personal, but their item types still claim reservations.
-- Dropping items and depositing into storage are blocked. Looting, crafting
+- Ordinary dropping is silently blocked. Hosts/operators can explicitly drop
+  one held item with `/pp drop`, or the held stack with `/pp drop stack`.
+  Dropping preserves the item's permanent allocation.
+- Depositing into storage is blocked. Looting, crafting
   and workstation use are allowed. Bundles and filled portable storage are blocked.
 - The default death rule keeps shared items and permanent reservations.
 - There is **no HUD slot counter or bossbar**. Counts are available on demand.
@@ -42,7 +45,7 @@ shared items and reservations across restarts.
 
 ## Commands
 
-The short alias is `/pp`. Start, join, death, reset and stop require host/operator
+The short alias is `/pp`. Start, join, drop, death, reset and stop require host/operator
 permissions. Status and slot inspection are available to players.
 
 | Command | Effect |
@@ -51,6 +54,8 @@ permissions. Status and slot inspection are available to players.
 | `/permapack status` | Inspect claimed slots, settings and protected returns. |
 | `/permapack slots` | List each reservation and its item ID. |
 | `/permapack join PlayerName` | Add an empty-inventory player, maximum three. |
+| `/permapack drop` | Drop one item from your selected main-hand stack; keep its allocation. |
+| `/permapack drop stack` | Drop the entire selected main-hand stack; keep its allocation. |
 | `/permapack death keep` | Keep shared items and reservations on death, the default. |
 | `/permapack death lose` | A death wipes shared items and online players' equipment; reservations remain. |
 | `/permapack stop` | End the run and return one copy of the shared inventory to the host. |
@@ -70,21 +75,25 @@ Use a JDK 25 and the included Gradle wrapper. On Windows:
 ```
 
 On other systems, use `./gradlew test runGameTest build`. Output is
-`build/libs/permapack-0.1.2.jar`. The test mod is a separate source set and is
+`build/libs/permapack-0.1.3.jar`. The test mod is a separate source set and is
 not shipped in the production JAR.
 
-The suite has 13 unit tests and five required Minecraft GameTests. It covers
+The suite has 13 unit tests and six required Minecraft GameTests. It covers
 three connected server players, real click packets, free positioning at the
 full allocation limit, ordinary swaps, split/merge budgets, left/right drags,
 pickups while another player holds a stack, concurrent gestures, crafting,
 drops and storage, loot, item conversions, persistence, reconnect,
-death/respawn and safe stop. See [BUILD-VERIFICATION.md](BUILD-VERIFICATION.md).
+death/respawn and safe stop. Drop checks verify that ordinary attempts send no
+overlay, command permission is enforced, real drops preserve quantities and
+components, and another player can pick them up without spending a new claim.
+See [BUILD-VERIFICATION.md](BUILD-VERIFICATION.md).
 
 ## Prototype limits
 
-Version 0.1.2 has been checked in a full Prism client with Essential,
-Flashback and fullbright. The existing save format and permanent allocation
-counts are retained. A three-human Essential session and long Survival runs
+Live Prism checks covered version 0.1.2 with Essential, Flashback and fullbright.
+The 0.1.3 drop update is covered by server packet and item-entity tests.
+The existing save format and permanent allocation counts are retained.
+A three-human Essential session and long Survival runs
 still need group testing. Every workstation, conversion and extra-mod
 interaction has not been exhaustively checked. Use a test world first.
 
